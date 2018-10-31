@@ -5,13 +5,13 @@ extern crate memmap;
 extern crate object;
 extern crate target_lexicon;
 
-use std::{env, fs, process};
 use std::collections::HashMap;
+use std::{env, fs, process};
 
+use faerie::{ArtifactBuilder, Decl, Link, RelocOverride};
 use goblin::elf;
-use faerie::{Link, ArtifactBuilder, Decl, RelocOverride};
-use object::{SectionKind, SymbolKind, Object, ObjectSection, RelocationKind};
-use target_lexicon::{Architecture, Vendor, OperatingSystem, Environment, BinaryFormat, Triple};
+use object::{Object, ObjectSection, RelocationKind, SectionKind, SymbolKind};
+use target_lexicon::{Architecture, BinaryFormat, Environment, OperatingSystem, Triple, Vendor};
 
 fn main() {
     env_logger::init();
@@ -72,7 +72,9 @@ fn main() {
                 if symbol.is_undefined() {
                     Decl::FunctionImport
                 } else {
-                    Decl::Function { global: symbol.is_global() }
+                    Decl::Function {
+                        global: symbol.is_global(),
+                    }
                 }
             }
             SymbolKind::Data => {
@@ -80,7 +82,10 @@ fn main() {
                     Decl::DataImport
                 } else {
                     // TODO: writable
-                    Decl::Data { global: symbol.is_global(), writable: true }
+                    Decl::Data {
+                        global: symbol.is_global(),
+                        writable: true,
+                    }
                 }
             }
             _ => {
@@ -111,7 +116,7 @@ fn main() {
 
     for section in file.sections() {
         match section.kind() {
-            SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData => {},
+            SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData => {}
             _ => continue,
         }
         if section.name() == Some(".eh_frame") {
@@ -160,10 +165,9 @@ fn main() {
                 RelocationKind::DirectSigned32 => elf::reloc::R_X86_64_32S,
                 RelocationKind::Other(kind) => kind,
             };
-            if let Err(_err) = artifact.link_with(
-                    Link { from, to, at },
-                    RelocOverride { reloc, addend },
-            ) {
+            if let Err(_err) =
+                artifact.link_with(Link { from, to, at }, RelocOverride { reloc, addend })
+            {
                 //println!("Link failed: {} {} 0x{:x} 0x{:x} 0x{:x}: {}", from, to, at, reloc, addend, _err);
             } else {
                 //println!("Link ok: {} {} 0x{:x} 0x{:x} 0x{:x}", from, to, at, reloc, addend);
