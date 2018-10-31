@@ -114,17 +114,26 @@ fn main() {
             SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData => {},
             _ => continue,
         }
+        if section.name() == Some(".eh_frame") {
+            // Not supported by faerie yet.
+            continue;
+        }
         let section_symbols = symbols.get(&section.id()).unwrap();
         for (offset, relocation) in section.relocations() {
-            //println!("\nrelocation: {:x} {:?}", offset, relocation);
+            println!("\nrelocation: {:x} {:?}", offset, relocation);
             let address = section.address() + offset;
-            let symbol = section_symbols
+            let from_symbol = section_symbols
                 .binary_search_by(|s| s.cmp_address(address))
-                .map(|index| &section_symbols[index])
-                .unwrap();
-            //println!("symbol {:?}", symbol);
-            let from = symbol.name().unwrap();
-            let at = address - symbol.address();
+                .map(|index| &section_symbols[index]);
+            //println!("from_symbol {:?}", from_symbol);
+            let from = match from_symbol {
+                Ok(s) => s.name().unwrap(),
+                Err(_) => section.name().unwrap(),
+            };
+            let at = match from_symbol {
+                Ok(s) => address - s.address(),
+                Err(_) => offset,
+            };
 
             let mut to_symbol = file.symbol_by_index(relocation.symbol()).unwrap();
             //println!("to_symbol {:?}", to_symbol);
