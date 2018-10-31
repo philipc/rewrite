@@ -1,0 +1,12 @@
+[package]
+name = "rewrite"
+version = "0.1.0"
+authors = ["Philip Craig <philipjcraig@gmail.com>"]
+
+[dependencies]
+env_logger = "0.5"
+object = { path = "../object" }
+faerie = { path = "../faerie" }
+goblin = { path = "../goblin" }
+memmap = "0.7"
+target-lexicon = "0.0.3"
