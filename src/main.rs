@@ -107,6 +107,17 @@ fn main() {
         }
     }
 
+    for section in file.sections() {
+        if let Some(name) = section.name() {
+            if name.starts_with(".debug_") {
+                artifact.declare(name, Decl::DebugSection).unwrap();
+                artifact
+                    .define(name, section.uncompressed_data().into_owned())
+                    .unwrap();
+            }
+        }
+    }
+
     let mut symbols = HashMap::new();
     for section in file.sections() {
         let mut section_symbols: Vec<_> = section.symbols().collect();
@@ -117,6 +128,11 @@ fn main() {
     for section in file.sections() {
         match section.kind() {
             SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData => {}
+            SectionKind::Unknown => {
+                if section.name().map(|name| name.starts_with(".debug_")) != Some(true) {
+                    continue;
+                }
+            }
             _ => continue,
         }
         if section.name() == Some(".eh_frame") {
@@ -125,7 +141,7 @@ fn main() {
         }
         let section_symbols = symbols.get(&section.id()).unwrap();
         for (offset, relocation) in section.relocations() {
-            println!("\nrelocation: {:x} {:?}", offset, relocation);
+            //println!("\nrelocation: {:x} {:?}", offset, relocation);
             let address = section.address() + offset;
             let from_symbol = section_symbols
                 .binary_search_by(|s| s.cmp_address(address))
