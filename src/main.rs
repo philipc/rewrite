@@ -1,5 +1,6 @@
 extern crate env_logger;
 extern crate faerie;
+extern crate gimli;
 extern crate goblin;
 extern crate memmap;
 extern crate object;
@@ -8,10 +9,13 @@ extern crate target_lexicon;
 use std::collections::HashMap;
 use std::{env, fs, process};
 
-use faerie::{ArtifactBuilder, Decl, Link, RelocOverride};
+use faerie::{Artifact, ArtifactBuilder, Decl, Link, RelocOverride};
 use goblin::elf;
 use object::{Object, ObjectSection, RelocationKind, SectionKind, SymbolKind};
 use target_lexicon::{Architecture, BinaryFormat, Environment, OperatingSystem, Triple, Vendor};
+
+mod dwarf;
+use dwarf::*;
 
 fn main() {
     env_logger::init();
@@ -57,66 +61,8 @@ fn main() {
 
     let mut artifact = ArtifactBuilder::new(target).name(to.to_string()).finish();
 
-    for symbol in file.symbols() {
-        let name = match symbol.name() {
-            Some("") | None => continue,
-            Some(name) => name,
-        };
-
-        let decl = match symbol.kind() {
-            SymbolKind::File => {
-                // TODO: use name for ArtifactBuilder
-                continue;
-            }
-            SymbolKind::Text => {
-                if symbol.is_undefined() {
-                    Decl::FunctionImport
-                } else {
-                    Decl::Function {
-                        global: symbol.is_global(),
-                    }
-                }
-            }
-            SymbolKind::Data => {
-                if symbol.is_undefined() {
-                    Decl::DataImport
-                } else {
-                    // TODO: writable
-                    Decl::Data {
-                        global: symbol.is_global(),
-                        writable: true,
-                    }
-                }
-            }
-            _ => {
-                if symbol.is_undefined() {
-                    // TODO: How do we tell between function and data?
-                    Decl::FunctionImport
-                } else {
-                    println!("Unsupported symbol: {:?}", symbol);
-                    return;
-                }
-            }
-        };
-
-        artifact.declare(name, decl).unwrap();
-        if !symbol.is_undefined() {
-            let mut data = symbol.data().to_vec();
-            data.resize(symbol.size() as usize, 0);
-            artifact.define(name, data).unwrap();
-        }
-    }
-
-    for section in file.sections() {
-        if let Some(name) = section.name() {
-            if name.starts_with(".debug_") {
-                artifact.declare(name, Decl::DebugSection).unwrap();
-                artifact
-                    .define(name, section.uncompressed_data().into_owned())
-                    .unwrap();
-            }
-        }
-    }
+    rewrite_symbols(&file, &mut artifact);
+    rewrite_dwarf(&file, &mut artifact);
 
     let mut symbols = HashMap::new();
     for section in file.sections() {
@@ -129,7 +75,7 @@ fn main() {
         match section.kind() {
             SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData => {}
             SectionKind::Unknown => {
-                if section.name().map(|name| name.starts_with(".debug_")) != Some(true) {
+                if !is_copy_dwarf_section(&section) {
                     continue;
                 }
             }
@@ -201,5 +147,57 @@ fn main() {
     if let Err(err) = artifact.write(file) {
         println!("Failed to write file '{}': {}", to, err);
         return;
+    }
+}
+
+fn rewrite_symbols(file: &object::File, artifact: &mut Artifact) {
+    for symbol in file.symbols() {
+        let name = match symbol.name() {
+            Some("") | None => continue,
+            Some(name) => name,
+        };
+
+        let decl = match symbol.kind() {
+            SymbolKind::File => {
+                // TODO: use name for ArtifactBuilder
+                continue;
+            }
+            SymbolKind::Text => {
+                if symbol.is_undefined() {
+                    Decl::FunctionImport
+                } else {
+                    Decl::Function {
+                        global: symbol.is_global(),
+                    }
+                }
+            }
+            SymbolKind::Data => {
+                if symbol.is_undefined() {
+                    Decl::DataImport
+                } else {
+                    // TODO: writable
+                    Decl::Data {
+                        global: symbol.is_global(),
+                        writable: true,
+                    }
+                }
+            }
+            _ => {
+                if symbol.is_undefined() {
+                    // TODO: How do we tell between function and data?
+                    Decl::FunctionImport
+                } else {
+                    println!("Unsupported symbol: {:?}", symbol);
+                    return;
+                }
+            }
+        };
+
+        artifact.declare(name, decl).unwrap();
+        if !symbol.is_undefined() {
+            let mut data = symbol.data().to_vec();
+            data.resize(symbol.size() as usize, 0);
+            artifact.define(name, data).unwrap();
+        }
     }
 }
