@@ -6,7 +6,6 @@ extern crate memmap;
 extern crate object;
 extern crate target_lexicon;
 
-use std::collections::HashMap;
 use std::{env, fs, process};
 
 use faerie::{Artifact, ArtifactBuilder, Decl, Link, RelocOverride};
@@ -16,6 +15,9 @@ use target_lexicon::{Architecture, BinaryFormat, Environment, OperatingSystem, T
 
 mod dwarf;
 use dwarf::*;
+
+mod symbol;
+use symbol::*;
 
 fn main() {
     env_logger::init();
@@ -51,6 +53,7 @@ fn main() {
         }
     };
 
+    assert_eq!(file.machine(), object::Machine::X86_64);
     let target = Triple {
         architecture: Architecture::X86_64,
         vendor: Vendor::Unknown,
@@ -61,81 +64,11 @@ fn main() {
 
     let mut artifact = ArtifactBuilder::new(target).name(to.to_string()).finish();
 
+    let symbols = SymbolMap::new(&file);
+
     rewrite_symbols(&file, &mut artifact);
-    rewrite_dwarf(&file, &mut artifact);
-
-    let mut symbols = HashMap::new();
-    for section in file.sections() {
-        let mut section_symbols: Vec<_> = section.symbols().collect();
-        section_symbols.sort_by_key(|s| s.address());
-        symbols.insert(section.id(), section_symbols);
-    }
-
-    for section in file.sections() {
-        match section.kind() {
-            SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData => {}
-            SectionKind::Unknown => {
-                if !is_copy_dwarf_section(&section) {
-                    continue;
-                }
-            }
-            _ => continue,
-        }
-        if section.name() == Some(".eh_frame") {
-            // Not supported by faerie yet.
-            continue;
-        }
-        let section_symbols = symbols.get(&section.id()).unwrap();
-        for (offset, relocation) in section.relocations() {
-            //println!("\nrelocation: {:x} {:?}", offset, relocation);
-            let address = section.address() + offset;
-            let from_symbol = section_symbols
-                .binary_search_by(|s| s.cmp_address(address))
-                .map(|index| &section_symbols[index]);
-            //println!("from_symbol {:?}", from_symbol);
-            let from = match from_symbol {
-                Ok(s) => s.name().unwrap(),
-                Err(_) => section.name().unwrap(),
-            };
-            let at = match from_symbol {
-                Ok(s) => address - s.address(),
-                Err(_) => offset,
-            };
-
-            let mut to_symbol = file.symbol_by_index(relocation.symbol()).unwrap();
-            //println!("to_symbol {:?}", to_symbol);
-            let to = &if to_symbol.kind() == SymbolKind::Section {
-                let to_section_id = to_symbol.section_id().unwrap();
-                let to_section = file.section_by_id(to_section_id).unwrap();
-                let to_symbols = symbols.get(&to_section_id).unwrap();
-                let to_symbol = to_symbols
-                    .binary_search_by(|s| s.cmp_address(to_symbol.address()))
-                    .map(|index| &to_symbols[index]);
-                match to_symbol {
-                    Ok(s) => s.name().unwrap(),
-                    Err(_) => to_section.name().unwrap(),
-                }.to_string()
-            } else {
-                to_symbol.name().unwrap().to_string()
-            };
-
-            assert!(!relocation.has_implicit_addend());
-            let addend = relocation.addend() as i32;
-            let reloc = match relocation.kind() {
-                RelocationKind::Direct64 => elf::reloc::R_X86_64_64,
-                RelocationKind::Direct32 => elf::reloc::R_X86_64_32,
-                RelocationKind::DirectSigned32 => elf::reloc::R_X86_64_32S,
-                RelocationKind::Other(kind) => kind,
-            };
-            if let Err(_err) =
-                artifact.link_with(Link { from, to, at }, RelocOverride { reloc, addend })
-            {
-                //println!("Link failed: {} {} 0x{:x} 0x{:x} 0x{:x}: {}", from, to, at, reloc, addend, _err);
-            } else {
-                //println!("Link ok: {} {} 0x{:x} 0x{:x} 0x{:x}", from, to, at, reloc, addend);
-            }
-        }
-    }
+    rewrite_dwarf(&file, &mut artifact, &symbols);
+    rewrite_relocations(&file, &mut artifact, &symbols);
 
     let file = match fs::File::create(&to) {
         Ok(file) => file,
@@ -198,6 +131,56 @@ fn rewrite_symbols(file: &object::File, artifact: &mut Artifact) {
             let mut data = symbol.data().to_vec();
             data.resize(symbol.size() as usize, 0);
             artifact.define(name, data).unwrap();
+        }
+    }
+}
+
+fn rewrite_relocations(file: &object::File, artifact: &mut Artifact, symbols: &SymbolMap) {
+    for section in file.sections() {
+        match section.kind() {
+            SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData => {}
+            SectionKind::Unknown => {
+                if !is_copy_dwarf_section(&section) {
+                    continue;
+                }
+            }
+            _ => continue,
+        }
+        if section.name() == Some(".eh_frame") {
+            // Not supported by faerie yet.
+            continue;
+        }
+        for (offset, relocation) in section.relocations() {
+            //println!("\nrelocation: {:x} {:?}", offset, relocation);
+            let (from, at) = symbols.lookup_section_offset(&section, offset);
+
+            let mut to_symbol = file.symbol_by_index(relocation.symbol()).unwrap();
+            //println!("to_symbol {:?}", to_symbol);
+            assert!(!relocation.has_implicit_addend());
+            let addend = relocation.addend() as u64;
+            let (to, addend) = symbols.lookup_symbol_offset(&file, &to_symbol, addend);
+
+            let reloc = match relocation.kind() {
+                RelocationKind::Direct64 => elf::reloc::R_X86_64_64,
+                RelocationKind::Direct32 => elf::reloc::R_X86_64_32,
+                RelocationKind::DirectSigned32 => elf::reloc::R_X86_64_32S,
+                RelocationKind::Other(kind) => kind,
+            };
+            if let Err(_err) = artifact.link_with(
+                Link {
+                    from: &from,
+                    to: &to,
+                    at,
+                },
+                RelocOverride {
+                    reloc,
+                    addend: addend as i32,
+                },
+            ) {
+                //println!("Link failed: {} {} 0x{:x} 0x{:x} 0x{:x}: {}", from, to, at, reloc, addend, _err);
+            } else {
+                //println!("Link ok: {} {} 0x{:x} 0x{:x} 0x{:x}", from, to, at, reloc, addend);
+            }
         }
     }
 }
