@@ -10,4 +10,4 @@ faerie = { path = "../faerie" }
 gimli = { path = "../gimli" }
 goblin = { path = "../goblin" }
 memmap = "0.7"
-target-lexicon = "0.0.3"
+target-lexicon = "0.2"

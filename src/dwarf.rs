@@ -2,11 +2,10 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use faerie::{Artifact, Decl, Link, RelocOverride};
+use faerie::{Artifact, Decl, Link, Reloc};
 use gimli::read::EndianSlice;
-use gimli::write::{Address, EndianVec, Section};
+use gimli::write::{Address, EndianVec};
 use gimli::{read, write, LittleEndian};
-use goblin::elf;
 use object::{self, Object, ObjectSection};
 
 use symbol::SymbolMap;
@@ -81,9 +80,9 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
         .unwrap();
     artifact.declare(".debug_str", Decl::DebugSection).unwrap();
 
-    let to_debug_info = to_debug_info.into_writer();
-    let to_debug_abbrev = to_debug_abbrev.into_writer();
-    let to_debug_str = to_debug_str.into_writer();
+    let to_debug_info = to_debug_info.0;
+    let to_debug_abbrev = to_debug_abbrev.0;
+    let to_debug_str = to_debug_str.0;
     artifact
         .define(".debug_info", to_debug_info.writer.into_vec())
         .unwrap();
@@ -102,11 +101,6 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
                 addend,
                 size,
             } => {
-                let reloc = match size {
-                    4 => elf::reloc::R_X86_64_32,
-                    8 => elf::reloc::R_X86_64_64,
-                    _ => unimplemented!(),
-                };
                 artifact
                     .link_with(
                         Link {
@@ -114,7 +108,7 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
                             to: section,
                             at: offset,
                         },
-                        RelocOverride { reloc, addend },
+                        Reloc::Debug { size, addend },
                     ).unwrap();
             }
             Relocation::Symbol {
@@ -125,11 +119,6 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
             } => {
                 let symbol = file.symbol_by_index(symbol as u64).unwrap();
                 let (to, addend) = symbols.lookup_symbol_offset(file, &symbol, addend as u64);
-                let reloc = match size {
-                    4 => elf::reloc::R_X86_64_32,
-                    8 => elf::reloc::R_X86_64_64,
-                    _ => unimplemented!(),
-                };
                 artifact
                     .link_with(
                         Link {
@@ -137,8 +126,8 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
                             to: &to,
                             at: offset,
                         },
-                        RelocOverride {
-                            reloc,
+                        Reloc::Debug {
+                            size,
                             addend: addend as i32,
                         },
                     ).unwrap();
@@ -423,7 +412,7 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
         self.writer.endian()
     }
 
-    fn len(&mut self) -> usize {
+    fn len(&self) -> usize {
         self.writer.len()
     }
 
@@ -454,7 +443,7 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
     fn write_offset(
         &mut self,
         val: usize,
-        section: write::SectionKind,
+        section: write::SectionId,
         size: u8,
     ) -> write::Result<()> {
         let offset = self.len() as u64;
@@ -472,7 +461,7 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
         &mut self,
         offset: usize,
         val: usize,
-        section: write::SectionKind,
+        section: write::SectionId,
         size: u8,
     ) -> write::Result<()> {
         let section = section.name();

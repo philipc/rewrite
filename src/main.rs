@@ -8,7 +8,7 @@ extern crate target_lexicon;
 
 use std::{env, fs, process};
 
-use faerie::{Artifact, ArtifactBuilder, Decl, Link, RelocOverride};
+use faerie::{Artifact, ArtifactBuilder, Decl, Link, Reloc};
 use goblin::elf;
 use object::{Object, ObjectSection, RelocationKind, SectionKind, SymbolKind};
 use target_lexicon::{Architecture, BinaryFormat, Environment, OperatingSystem, Triple, Vendor};
@@ -172,7 +172,7 @@ fn rewrite_relocations(file: &object::File, artifact: &mut Artifact, symbols: &S
                     to: &to,
                     at,
                 },
-                RelocOverride {
+                Reloc::Raw {
                     reloc,
                     addend: addend as i32,
                 },
