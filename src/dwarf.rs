@@ -39,29 +39,39 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
     };
 
     let addresses = ReadAddressMap::default();
-    let (debug_info_data, debug_info_relocs) = get_section(file, ".debug_info");
     let (debug_abbrev_data, debug_abbrev_relocs) = get_section(file, ".debug_abbrev");
+    let (debug_info_data, debug_info_relocs) = get_section(file, ".debug_info");
+    let (debug_line_data, debug_line_relocs) = get_section(file, ".debug_line");
     let (debug_str_data, debug_str_relocs) = get_section(file, ".debug_str");
-    let from_debug_info =
-        read::DebugInfo::from(get_reader(&debug_info_data, &debug_info_relocs, &addresses));
     let from_debug_abbrev = read::DebugAbbrev::from(get_reader(
         &debug_abbrev_data,
         &debug_abbrev_relocs,
         &addresses,
     ));
+    let from_debug_info =
+        read::DebugInfo::from(get_reader(&debug_info_data, &debug_info_relocs, &addresses));
+    let from_debug_line =
+        read::DebugLine::from(get_reader(&debug_line_data, &debug_line_relocs, &addresses));
     let from_debug_str =
         read::DebugStr::from(get_reader(&debug_str_data, &debug_str_relocs, &addresses));
 
     let convert_address = |index| Some(addresses.get(index as usize));
 
+    let mut line_programs = write::LineNumberProgramTable::default();
     let mut strings = write::StringTable::default();
     let units = write::UnitTable::from(
-        &from_debug_info,
         &from_debug_abbrev,
+        &from_debug_info,
+        &from_debug_line,
         &from_debug_str,
+        &mut line_programs,
         &mut strings,
         &convert_address,
     ).unwrap();
+
+    let mut to_debug_line =
+        write::DebugLine::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
+    let debug_line_offsets = line_programs.write(&mut to_debug_line).unwrap();
 
     let mut to_debug_str = write::DebugStr::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
     let debug_str_offsets = strings.write(&mut to_debug_str).unwrap();
@@ -71,29 +81,63 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
     let mut to_debug_abbrev =
         write::DebugAbbrev::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
     units
-        .write(&mut to_debug_info, &mut to_debug_abbrev, &debug_str_offsets)
-        .unwrap();
+        .write(
+            &mut to_debug_abbrev,
+            &mut to_debug_info,
+            &debug_line_offsets,
+            &debug_str_offsets,
+        ).unwrap();
 
-    artifact.declare(".debug_info", Decl::DebugSection).unwrap();
     artifact
         .declare(".debug_abbrev", Decl::DebugSection)
         .unwrap();
+    artifact.declare(".debug_info", Decl::DebugSection).unwrap();
+    artifact.declare(".debug_line", Decl::DebugSection).unwrap();
     artifact.declare(".debug_str", Decl::DebugSection).unwrap();
 
-    let to_debug_info = to_debug_info.0;
     let to_debug_abbrev = to_debug_abbrev.0;
+    let to_debug_info = to_debug_info.0;
+    let to_debug_line = to_debug_line.0;
     let to_debug_str = to_debug_str.0;
+    artifact
+        .define(".debug_abbrev", to_debug_abbrev.writer.into_vec())
+        .unwrap();
     artifact
         .define(".debug_info", to_debug_info.writer.into_vec())
         .unwrap();
     artifact
-        .define(".debug_abbrev", to_debug_abbrev.writer.into_vec())
+        .define(".debug_line", to_debug_line.writer.into_vec())
         .unwrap();
     artifact
         .define(".debug_str", to_debug_str.writer.into_vec())
         .unwrap();
 
-    for reloc in to_debug_info.relocations {
+    link(
+        file,
+        artifact,
+        symbols,
+        to_debug_info.relocations,
+        ".debug_info",
+    );
+    link(
+        file,
+        artifact,
+        symbols,
+        to_debug_line.relocations,
+        ".debug_line",
+    );
+    assert!(to_debug_abbrev.relocations.is_empty());
+    assert!(to_debug_str.relocations.is_empty());
+}
+
+fn link(
+    file: &object::File,
+    artifact: &mut Artifact,
+    symbols: &SymbolMap,
+    relocations: Vec<Relocation>,
+    from: &str,
+) {
+    for reloc in relocations {
         match reloc {
             Relocation::Section {
                 offset,
@@ -104,7 +148,7 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
                 artifact
                     .link_with(
                         Link {
-                            from: ".debug_info",
+                            from,
                             to: section,
                             at: offset,
                         },
@@ -122,7 +166,7 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
                 artifact
                     .link_with(
                         Link {
-                            from: ".debug_info",
+                            from,
                             to: &to,
                             at: offset,
                         },
@@ -134,16 +178,13 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
             }
         }
     }
-
-    assert!(to_debug_abbrev.relocations.is_empty());
-    assert!(to_debug_str.relocations.is_empty());
 }
 
 pub fn is_copy_dwarf_section(section: &object::Section) -> bool {
     if let Some(name) = section.name() {
         if name.starts_with(".debug_") {
             match name {
-                ".debug_info" | ".debug_abbrev" | ".debug_str" => return false,
+                ".debug_abbrev" | ".debug_info" | ".debug_line" | ".debug_str" => return false,
                 _ => return true,
             }
         }
