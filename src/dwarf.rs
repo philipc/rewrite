@@ -176,46 +176,80 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
         )
         .unwrap();
 
-    artifact
-        .declare(".debug_abbrev", Decl::DebugSection)
-        .unwrap();
-    artifact.declare(".debug_info", Decl::DebugSection).unwrap();
-    artifact.declare(".debug_line", Decl::DebugSection).unwrap();
-    artifact.declare(".debug_str", Decl::DebugSection).unwrap();
-
-    let to_debug_abbrev = to_debug_abbrev.0;
-    let to_debug_info = to_debug_info.0;
-    let to_debug_line = to_debug_line.0;
-    let to_debug_str = to_debug_str.0;
-    artifact
-        .define(".debug_abbrev", to_debug_abbrev.writer.into_vec())
-        .unwrap();
-    artifact
-        .define(".debug_info", to_debug_info.writer.into_vec())
-        .unwrap();
-    artifact
-        .define(".debug_line", to_debug_line.writer.into_vec())
-        .unwrap();
-    artifact
-        .define(".debug_str", to_debug_str.writer.into_vec())
-        .unwrap();
-
-    link(
+    define(
+        ".debug_abbrev",
         file,
         artifact,
         symbols,
-        to_debug_info.relocations,
-        ".debug_info",
+        to_debug_abbrev.0.writer.into_vec(),
+        to_debug_abbrev.0.relocations,
     );
-    link(
+    define(
+        ".debug_str",
         file,
         artifact,
         symbols,
-        to_debug_line.relocations,
+        to_debug_str.0.writer.into_vec(),
+        to_debug_str.0.relocations,
+    );
+    define(
+        ".debug_line_str",
+        file,
+        artifact,
+        symbols,
+        to_debug_line_str.0.writer.into_vec(),
+        to_debug_line_str.0.relocations,
+    );
+    define(
         ".debug_line",
+        file,
+        artifact,
+        symbols,
+        to_debug_line.0.writer.into_vec(),
+        to_debug_line.0.relocations,
     );
-    assert!(to_debug_abbrev.relocations.is_empty());
-    assert!(to_debug_str.relocations.is_empty());
+    define(
+        ".debug_ranges",
+        file,
+        artifact,
+        symbols,
+        to_debug_ranges.0.writer.into_vec(),
+        to_debug_ranges.0.relocations,
+    );
+    define(
+        ".debug_rnglists",
+        file,
+        artifact,
+        symbols,
+        to_debug_rnglists.0.writer.into_vec(),
+        to_debug_rnglists.0.relocations,
+    );
+    define(
+        ".debug_info",
+        file,
+        artifact,
+        symbols,
+        to_debug_info.0.writer.into_vec(),
+        to_debug_info.0.relocations,
+    );
+}
+
+fn define(
+    name: &str,
+    file: &object::File,
+    artifact: &mut Artifact,
+    symbols: &SymbolMap,
+    data: Vec<u8>,
+    relocations: Vec<Relocation>,
+) {
+    if data.is_empty() {
+        return;
+    }
+
+    artifact
+        .declare_with(name, Decl::DebugSection, data)
+        .unwrap();
+    link(file, artifact, symbols, relocations, name);
 }
 
 fn link(
@@ -274,7 +308,8 @@ pub fn is_copy_dwarf_section(section: &object::Section) -> bool {
     if let Some(name) = section.name() {
         if name.starts_with(".debug_") {
             match name {
-                ".debug_abbrev" | ".debug_info" | ".debug_line" | ".debug_str" => return false,
+                ".debug_abbrev" | ".debug_info" | ".debug_line" | ".debug_line_str"
+                | ".debug_ranges" | ".debug_rnglists" | ".debug_str" => return false,
                 _ => return true,
             }
         }
