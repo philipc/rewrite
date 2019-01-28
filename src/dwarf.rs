@@ -39,42 +39,122 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
     };
 
     let addresses = ReadAddressMap::default();
+    let no_section = (Cow::Borrowed(&[][..]), ReadRelocationMap::default());
     let (debug_abbrev_data, debug_abbrev_relocs) = get_section(file, ".debug_abbrev");
+    let (debug_addr_data, debug_addr_relocs) = get_section(file, ".debug_addr");
     let (debug_info_data, debug_info_relocs) = get_section(file, ".debug_info");
     let (debug_line_data, debug_line_relocs) = get_section(file, ".debug_line");
+    let (debug_line_str_data, debug_line_str_relocs) = get_section(file, ".debug_line_str");
+    let (debug_loc_data, debug_loc_relocs) = get_section(file, ".debug_loc");
+    let (debug_loclists_data, debug_loclists_relocs) = get_section(file, ".debug_loclists");
+    let (debug_ranges_data, debug_ranges_relocs) = get_section(file, ".debug_ranges");
+    let (debug_rnglists_data, debug_rnglists_relocs) = get_section(file, ".debug_rnglists");
     let (debug_str_data, debug_str_relocs) = get_section(file, ".debug_str");
-    let from_debug_abbrev = read::DebugAbbrev::from(get_reader(
-        &debug_abbrev_data,
-        &debug_abbrev_relocs,
-        &addresses,
-    ));
-    let from_debug_info =
-        read::DebugInfo::from(get_reader(&debug_info_data, &debug_info_relocs, &addresses));
-    let from_debug_line =
-        read::DebugLine::from(get_reader(&debug_line_data, &debug_line_relocs, &addresses));
-    let from_debug_str =
-        read::DebugStr::from(get_reader(&debug_str_data, &debug_str_relocs, &addresses));
+    let (debug_str_offsets_data, debug_str_offsets_relocs) =
+        get_section(file, ".debug_str_offsets");
+    let (debug_types_data, debug_types_relocs) = get_section(file, ".debug_types");
+    let dwarf = read::Dwarf {
+        endian: LittleEndian,
+        debug_abbrev: read::DebugAbbrev::from(get_reader(
+            &debug_abbrev_data,
+            &debug_abbrev_relocs,
+            &addresses,
+        )),
+        debug_addr: read::DebugAddr::from(get_reader(
+            &debug_addr_data,
+            &debug_addr_relocs,
+            &addresses,
+        )),
+        debug_info: read::DebugInfo::from(get_reader(
+            &debug_info_data,
+            &debug_info_relocs,
+            &addresses,
+        )),
+        debug_line: read::DebugLine::from(get_reader(
+            &debug_line_data,
+            &debug_line_relocs,
+            &addresses,
+        )),
+        debug_line_str: read::DebugLineStr::from(get_reader(
+            &debug_line_str_data,
+            &debug_line_str_relocs,
+            &addresses,
+        )),
+        debug_str: read::DebugStr::from(get_reader(&debug_str_data, &debug_str_relocs, &addresses)),
+        debug_str_offsets: read::DebugStrOffsets::from(get_reader(
+            &debug_str_offsets_data,
+            &debug_str_offsets_relocs,
+            &addresses,
+        )),
+        debug_str_sup: read::DebugStr::from(get_reader(&no_section.0, &no_section.1, &addresses)),
+        debug_types: read::DebugTypes::from(get_reader(
+            &debug_types_data,
+            &debug_types_relocs,
+            &addresses,
+        )),
+        locations: read::LocationLists::new(
+            read::DebugLoc::from(get_reader(&debug_loc_data, &debug_loc_relocs, &addresses)),
+            read::DebugLocLists::from(get_reader(
+                &debug_loclists_data,
+                &debug_loclists_relocs,
+                &addresses,
+            )),
+        ).unwrap(),
+        ranges: read::RangeLists::new(
+            read::DebugRanges::from(get_reader(
+                &debug_ranges_data,
+                &debug_ranges_relocs,
+                &addresses,
+            )),
+            read::DebugRngLists::from(get_reader(
+                &debug_rnglists_data,
+                &debug_rnglists_relocs,
+                &addresses,
+            )),
+        ).unwrap(),
+    };
 
     let convert_address = |index| Some(addresses.get(index as usize));
 
-    let mut line_programs = write::LineNumberProgramTable::default();
+    let mut line_programs = write::LineProgramTable::default();
+    let mut line_strings = write::LineStringTable::default();
+    let mut ranges = write::RangeListTable::default();
     let mut strings = write::StringTable::default();
     let units = write::UnitTable::from(
-        &from_debug_abbrev,
-        &from_debug_info,
-        &from_debug_line,
-        &from_debug_str,
+        &dwarf,
         &mut line_programs,
+        &mut line_strings,
         &mut strings,
+        &mut ranges,
         &convert_address,
     ).unwrap();
 
-    let mut to_debug_line =
-        write::DebugLine::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
-    let debug_line_offsets = line_programs.write(&mut to_debug_line).unwrap();
-
     let mut to_debug_str = write::DebugStr::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
     let debug_str_offsets = strings.write(&mut to_debug_str).unwrap();
+
+    let mut to_debug_line_str =
+        write::DebugLineStr::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
+    let debug_line_str_offsets = line_strings.write(&mut to_debug_line_str).unwrap();
+
+    let mut to_debug_line =
+        write::DebugLine::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
+    let debug_line_offsets = line_programs
+        .write(
+            &mut to_debug_line,
+            &debug_line_str_offsets,
+            &debug_str_offsets,
+        ).unwrap();
+
+    let mut to_debug_ranges =
+        write::DebugRanges::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
+    let mut to_debug_rnglists =
+        write::DebugRngLists::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
+    let range_list_offsets = ranges
+        .write(
+            &mut to_debug_ranges,
+            &mut to_debug_rnglists,
+            dwarf.ranges.encoding(),
+        ).unwrap();
 
     let mut to_debug_info =
         write::DebugInfo::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
@@ -85,6 +165,8 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
             &mut to_debug_abbrev,
             &mut to_debug_info,
             &debug_line_offsets,
+            &debug_line_str_offsets,
+            &range_list_offsets,
             &debug_str_offsets,
         ).unwrap();
 
@@ -405,13 +487,8 @@ impl<'a, R: read::Reader<Offset = usize>> read::Reader for ReaderRelocate<'a, R>
     }
 
     #[inline]
-    fn read_u8_array<A>(&mut self) -> read::Result<A>
-    where
-        A: Sized + Default + AsMut<[u8]>,
-    {
-        //let offset = self.reader.offset_from(&self.section);
-        //println!("read_i8_array {} {} {}", offset, std::mem::size_of::<A>(), self.reader.len());
-        self.reader.read_u8_array()
+    fn read_slice(&mut self, buf: &mut [u8]) -> read::Result<()> {
+        self.reader.read_slice(buf)
     }
 }
 

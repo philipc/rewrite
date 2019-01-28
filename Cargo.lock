@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "faerie"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "env_logger 0.5.13 (registry+https://github.com/rust-lang/crates.io-index)",
  "failure 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "goblin"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "plain 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -377,9 +377,9 @@ name = "rewrite"
 version = "0.1.0"
 dependencies = [
  "env_logger 0.5.13 (registry+https://github.com/rust-lang/crates.io-index)",
- "faerie 0.6.0",
+ "faerie 0.7.1",
  "gimli 0.16.1",
- "goblin 0.0.18",
+ "goblin 0.0.19",
  "memmap 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "object 0.11.0",
  "target-lexicon 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
