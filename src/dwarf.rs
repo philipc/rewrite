@@ -99,7 +99,8 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
                 &debug_loclists_relocs,
                 &addresses,
             )),
-        ).unwrap(),
+        )
+        .unwrap(),
         ranges: read::RangeLists::new(
             read::DebugRanges::from(get_reader(
                 &debug_ranges_data,
@@ -111,7 +112,8 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
                 &debug_rnglists_relocs,
                 &addresses,
             )),
-        ).unwrap(),
+        )
+        .unwrap(),
     };
 
     let convert_address = |index| Some(addresses.get(index as usize));
@@ -127,7 +129,8 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
         &mut strings,
         &mut ranges,
         &convert_address,
-    ).unwrap();
+    )
+    .unwrap();
 
     let mut to_debug_str = write::DebugStr::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
     let debug_str_offsets = strings.write(&mut to_debug_str).unwrap();
@@ -143,7 +146,8 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
             &mut to_debug_line,
             &debug_line_str_offsets,
             &debug_str_offsets,
-        ).unwrap();
+        )
+        .unwrap();
 
     let mut to_debug_ranges =
         write::DebugRanges::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
@@ -154,7 +158,8 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
             &mut to_debug_ranges,
             &mut to_debug_rnglists,
             dwarf.ranges.encoding(),
-        ).unwrap();
+        )
+        .unwrap();
 
     let mut to_debug_info =
         write::DebugInfo::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
@@ -168,7 +173,8 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
             &debug_line_str_offsets,
             &range_list_offsets,
             &debug_str_offsets,
-        ).unwrap();
+        )
+        .unwrap();
 
     artifact
         .declare(".debug_abbrev", Decl::DebugSection)
@@ -235,7 +241,8 @@ fn link(
                             at: offset,
                         },
                         Reloc::Debug { size, addend },
-                    ).unwrap();
+                    )
+                    .unwrap();
             }
             Relocation::Symbol {
                 offset,
@@ -256,7 +263,8 @@ fn link(
                             size,
                             addend: addend as i32,
                         },
-                    ).unwrap();
+                    )
+                    .unwrap();
             }
         }
     }
