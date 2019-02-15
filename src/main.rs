@@ -121,7 +121,7 @@ fn rewrite_symbols(file: &object::File, artifact: &mut Artifact) {
                     Decl::FunctionImport
                 } else {
                     println!("Unsupported symbol: {:?}", symbol);
-                    return;
+                    continue;
                 }
             }
         };

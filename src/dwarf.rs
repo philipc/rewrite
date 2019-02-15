@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use faerie::{Artifact, Decl, Link, Reloc};
 use gimli::read::EndianSlice;
 use gimli::write::{Address, EndianVec};
-use gimli::{read, write, LittleEndian};
+use gimli::{self, read, write, LittleEndian};
 use object::{self, Object, ObjectSection};
 
 use symbol::SymbolMap;
@@ -54,7 +54,6 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
         get_section(file, ".debug_str_offsets");
     let (debug_types_data, debug_types_relocs) = get_section(file, ".debug_types");
     let dwarf = read::Dwarf {
-        endian: LittleEndian,
         debug_abbrev: read::DebugAbbrev::from(get_reader(
             &debug_abbrev_data,
             &debug_abbrev_relocs,
@@ -99,8 +98,7 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
                 &debug_loclists_relocs,
                 &addresses,
             )),
-        )
-        .unwrap(),
+        ),
         ranges: read::RangeLists::new(
             read::DebugRanges::from(get_reader(
                 &debug_ranges_data,
@@ -112,126 +110,26 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
                 &debug_rnglists_relocs,
                 &addresses,
             )),
-        )
-        .unwrap(),
+        ),
     };
 
     let convert_address = |index| Some(addresses.get(index as usize));
 
-    let mut line_programs = write::LineProgramTable::default();
-    let mut line_strings = write::LineStringTable::default();
-    let mut ranges = write::RangeListTable::default();
-    let mut strings = write::StringTable::default();
-    let units = write::UnitTable::from(
-        &dwarf,
-        &mut line_programs,
-        &mut line_strings,
-        &mut strings,
-        &mut ranges,
-        &convert_address,
-    )
-    .unwrap();
-
-    let mut to_debug_str = write::DebugStr::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
-    let debug_str_offsets = strings.write(&mut to_debug_str).unwrap();
-
-    let mut to_debug_line_str =
-        write::DebugLineStr::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
-    let debug_line_str_offsets = line_strings.write(&mut to_debug_line_str).unwrap();
-
-    let mut to_debug_line =
-        write::DebugLine::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
-    let debug_line_offsets = line_programs
-        .write(
-            &mut to_debug_line,
-            &debug_line_str_offsets,
-            &debug_str_offsets,
-        )
-        .unwrap();
-
-    let mut to_debug_ranges =
-        write::DebugRanges::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
-    let mut to_debug_rnglists =
-        write::DebugRngLists::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
-    let range_list_offsets = ranges
-        .write(
-            &mut to_debug_ranges,
-            &mut to_debug_rnglists,
-            dwarf.ranges.encoding(),
-        )
-        .unwrap();
-
-    let mut to_debug_info =
-        write::DebugInfo::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
-    let mut to_debug_abbrev =
-        write::DebugAbbrev::from(WriterRelocate::new(EndianVec::new(LittleEndian)));
-    units
-        .write(
-            &mut to_debug_abbrev,
-            &mut to_debug_info,
-            &debug_line_offsets,
-            &debug_line_str_offsets,
-            &range_list_offsets,
-            &debug_str_offsets,
-        )
-        .unwrap();
-
-    define(
-        ".debug_abbrev",
-        file,
-        artifact,
-        symbols,
-        to_debug_abbrev.0.writer.into_vec(),
-        to_debug_abbrev.0.relocations,
-    );
-    define(
-        ".debug_str",
-        file,
-        artifact,
-        symbols,
-        to_debug_str.0.writer.into_vec(),
-        to_debug_str.0.relocations,
-    );
-    define(
-        ".debug_line_str",
-        file,
-        artifact,
-        symbols,
-        to_debug_line_str.0.writer.into_vec(),
-        to_debug_line_str.0.relocations,
-    );
-    define(
-        ".debug_line",
-        file,
-        artifact,
-        symbols,
-        to_debug_line.0.writer.into_vec(),
-        to_debug_line.0.relocations,
-    );
-    define(
-        ".debug_ranges",
-        file,
-        artifact,
-        symbols,
-        to_debug_ranges.0.writer.into_vec(),
-        to_debug_ranges.0.relocations,
-    );
-    define(
-        ".debug_rnglists",
-        file,
-        artifact,
-        symbols,
-        to_debug_rnglists.0.writer.into_vec(),
-        to_debug_rnglists.0.relocations,
-    );
-    define(
-        ".debug_info",
-        file,
-        artifact,
-        symbols,
-        to_debug_info.0.writer.into_vec(),
-        to_debug_info.0.relocations,
-    );
+    let mut dwarf = write::Dwarf::from(&dwarf, &convert_address).unwrap();
+    // TODO: only add relocations for relocatable files
+    let mut sections = write::Sections::new(WriterRelocate::new(EndianVec::new(LittleEndian)));
+    dwarf.write(&mut sections).unwrap();
+    let _: Result<(), gimli::Error> = sections.for_each_mut(|id, w| {
+        define(
+            id.name(),
+            file,
+            artifact,
+            symbols,
+            w.writer.take(),
+            &w.relocations,
+        );
+        Ok(())
+    });
 }
 
 fn define(
@@ -240,7 +138,7 @@ fn define(
     artifact: &mut Artifact,
     symbols: &SymbolMap,
     data: Vec<u8>,
-    relocations: Vec<Relocation>,
+    relocations: &[Relocation],
 ) {
     if data.is_empty() {
         return;
@@ -256,11 +154,11 @@ fn link(
     file: &object::File,
     artifact: &mut Artifact,
     symbols: &SymbolMap,
-    relocations: Vec<Relocation>,
+    relocations: &[Relocation],
     from: &str,
 ) {
     for reloc in relocations {
-        match reloc {
+        match *reloc {
             Relocation::Section {
                 offset,
                 section,
@@ -372,6 +270,8 @@ fn get_section<'data>(
 // a gimli::write::Address. To work around this, every time we read an address we add
 // an Address to this map, and return that index read_address(). Then later we
 // convert that index back into the Address.
+// Note that addresses 0 and !0 can have special meaning in DWARF (eg for range lists).
+// 0 can also be appear as a default value for DW_AT_low_pc.
 #[derive(Debug, Default)]
 struct ReadAddressMap {
     addresses: RefCell<Vec<Address>>,
@@ -380,14 +280,18 @@ struct ReadAddressMap {
 impl ReadAddressMap {
     fn add(&self, address: Address) -> usize {
         let mut addresses = self.addresses.borrow_mut();
-        let index = addresses.len();
         addresses.push(address);
-        index
+        // Non-zero
+        addresses.len()
     }
 
     fn get(&self, index: usize) -> Address {
-        let addresses = self.addresses.borrow();
-        addresses[index]
+        if index == 0 {
+            Address::Absolute(0)
+        } else {
+            let addresses = self.addresses.borrow();
+            addresses[index - 1]
+        }
     }
 }
 
