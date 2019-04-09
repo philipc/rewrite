@@ -90,35 +90,39 @@ fn rewrite_symbols(file: &object::File, artifact: &mut Artifact) {
             Some(name) => name,
         };
 
-        let decl = match symbol.kind() {
+        let decl: Decl = match symbol.kind() {
             SymbolKind::File => {
                 // TODO: use name for ArtifactBuilder
                 continue;
             }
             SymbolKind::Text => {
                 if symbol.is_undefined() {
-                    Decl::FunctionImport
+                    Decl::function_import().into()
                 } else {
-                    Decl::Function {
-                        global: symbol.is_global(),
+                    // TODO: weak symbols
+                    if symbol.is_global() {
+                        Decl::function().global().into()
+                    } else {
+                        Decl::function().into()
                     }
                 }
             }
             SymbolKind::Data => {
                 if symbol.is_undefined() {
-                    Decl::DataImport
+                    Decl::data_import().into()
                 } else {
-                    // TODO: writable
-                    Decl::Data {
-                        global: symbol.is_global(),
-                        writable: true,
+                    // TODO: writable, weak
+                    if symbol.is_global() {
+                        Decl::data().global().writable().into()
+                    } else {
+                        Decl::data().writable().into()
                     }
                 }
             }
             _ => {
                 if symbol.is_undefined() {
                     // TODO: How do we tell between function and data?
-                    Decl::FunctionImport
+                    Decl::function_import().into()
                 } else {
                     println!("Unsupported symbol: {:?}", symbol);
                     continue;

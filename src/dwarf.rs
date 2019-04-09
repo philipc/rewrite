@@ -15,7 +15,7 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
     for section in file.sections() {
         if let Some(name) = section.name() {
             if is_copy_dwarf_section(&section) {
-                artifact.declare(name, Decl::DebugSection).unwrap();
+                artifact.declare(name, Decl::debug_section()).unwrap();
                 artifact
                     .define(name, section.uncompressed_data().into_owned())
                     .unwrap();
@@ -145,7 +145,7 @@ fn define(
     }
 
     artifact
-        .declare_with(name, Decl::DebugSection, data)
+        .declare_with(name, Decl::debug_section(), data)
         .unwrap();
     link(file, artifact, symbols, relocations, name);
 }
@@ -409,6 +409,16 @@ impl<'a, R: read::Reader<Offset = usize>> read::Reader for ReaderRelocate<'a, R>
     }
 
     #[inline]
+    fn offset_id(&self) -> gimli::ReaderOffsetId {
+        self.reader.offset_id()
+    }
+
+    #[inline]
+    fn lookup_offset_id(&self, id: gimli::ReaderOffsetId) -> Option<Self::Offset> {
+        self.reader.lookup_offset_id(id)
+    }
+
+    #[inline]
     fn find(&self, byte: u8) -> read::Result<Self::Offset> {
         self.reader.find(byte)
     }
@@ -508,7 +518,7 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
     fn write_offset(
         &mut self,
         val: usize,
-        section: write::SectionId,
+        section: gimli::SectionId,
         size: u8,
     ) -> write::Result<()> {
         let offset = self.len() as u64;
@@ -526,7 +536,7 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
         &mut self,
         offset: usize,
         val: usize,
-        section: write::SectionId,
+        section: gimli::SectionId,
         size: u8,
     ) -> write::Result<()> {
         let section = section.name();
