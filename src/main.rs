@@ -132,7 +132,7 @@ fn rewrite_symbols(file: &object::File, artifact: &mut Artifact) {
 
         artifact.declare(name, decl).unwrap();
         if !symbol.is_undefined() {
-            let mut data = symbol.data().to_vec();
+            let mut data = file.symbol_data(&symbol).unwrap().to_vec();
             data.resize(symbol.size() as usize, 0);
             artifact.define(name, data).unwrap();
         }
