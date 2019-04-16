@@ -1,6 +1,7 @@
 [package]
 name = "rewrite"
 version = "0.1.0"
+edition = "2018"
 authors = ["Philip Craig <philipjcraig@gmail.com>"]
 
 [dependencies]

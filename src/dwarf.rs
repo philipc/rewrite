@@ -8,7 +8,7 @@ use gimli::write::{Address, EndianVec};
 use gimli::{self, read, write, LittleEndian};
 use object::{self, Object, ObjectSection, SymbolIndex};
 
-use symbol::SymbolMap;
+use crate::symbol::SymbolMap;
 
 pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &SymbolMap) {
     // Define the sections we can't convert yet.

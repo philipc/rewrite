@@ -158,7 +158,7 @@ fn rewrite_relocations(file: &object::File, artifact: &mut Artifact, symbols: &S
             //println!("\nrelocation: {:x} {:?}", offset, relocation);
             let (from, at) = symbols.lookup_section_offset(&section, offset);
 
-            let mut to_symbol = file.symbol_by_index(relocation.symbol()).unwrap();
+            let to_symbol = file.symbol_by_index(relocation.symbol()).unwrap();
             //println!("to_symbol {:?}", to_symbol);
             assert!(!relocation.has_implicit_addend());
             let addend = relocation.addend() as u64;
