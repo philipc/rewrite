@@ -10,7 +10,7 @@ use object::{self, Object, ObjectSection, SymbolIndex};
 
 use crate::symbol::SymbolMap;
 
-pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &SymbolMap) {
+pub fn rewrite_dwarf(file: &object::File<'_>, artifact: &mut Artifact, symbols: &SymbolMap<'_>) {
     // Define the sections we can't convert yet.
     for section in file.sections() {
         if let Some(name) = section.name() {
@@ -134,9 +134,9 @@ pub fn rewrite_dwarf(file: &object::File, artifact: &mut Artifact, symbols: &Sym
 
 fn define(
     name: &str,
-    file: &object::File,
+    file: &object::File<'_>,
     artifact: &mut Artifact,
-    symbols: &SymbolMap,
+    symbols: &SymbolMap<'_>,
     data: Vec<u8>,
     relocations: &[Relocation],
 ) {
@@ -151,9 +151,9 @@ fn define(
 }
 
 fn link(
-    file: &object::File,
+    file: &object::File<'_>,
     artifact: &mut Artifact,
-    symbols: &SymbolMap,
+    symbols: &SymbolMap<'_>,
     relocations: &[Relocation],
     from: &str,
 ) {
@@ -202,7 +202,7 @@ fn link(
     }
 }
 
-pub fn is_copy_dwarf_section(section: &object::Section) -> bool {
+pub fn is_copy_dwarf_section(section: &object::Section<'_, '_>) -> bool {
     if let Some(name) = section.name() {
         if name.starts_with(".debug_") {
             match name {
@@ -429,17 +429,17 @@ impl<'a, R: read::Reader<Offset = usize>> read::Reader for ReaderRelocate<'a, R>
     }
 
     #[inline]
-    fn to_slice(&self) -> read::Result<Cow<[u8]>> {
+    fn to_slice(&self) -> read::Result<Cow<'_, [u8]>> {
         self.reader.to_slice()
     }
 
     #[inline]
-    fn to_string(&self) -> read::Result<Cow<str>> {
+    fn to_string(&self) -> read::Result<Cow<'_, str>> {
         self.reader.to_string()
     }
 
     #[inline]
-    fn to_string_lossy(&self) -> read::Result<Cow<str>> {
+    fn to_string_lossy(&self) -> read::Result<Cow<'_, str>> {
         self.reader.to_string_lossy()
     }
 

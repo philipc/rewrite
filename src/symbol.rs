@@ -17,8 +17,8 @@ impl<'data> SymbolMap<'data> {
 
     pub fn lookup_symbol_offset(
         &self,
-        file: &object::File,
-        symbol: &object::Symbol,
+        file: &object::File<'_>,
+        symbol: &object::Symbol<'_>,
         offset: u64,
     ) -> (String, u64) {
         if symbol.kind() == SymbolKind::Section {
@@ -30,9 +30,13 @@ impl<'data> SymbolMap<'data> {
         }
     }
 
-    pub fn lookup_section_offset(&self, section: &object::Section, offset: u64) -> (String, u64) {
+    pub fn lookup_section_offset(
+        &self,
+        section: &object::Section<'_, '_>,
+        offset: u64,
+    ) -> (String, u64) {
         let address = section.address() + offset;
-        let cmp_address = |symbol: &object::Symbol| {
+        let cmp_address = |symbol: &object::Symbol<'_>| {
             if address < symbol.address() {
                 std::cmp::Ordering::Greater
             } else if address < symbol.address() + symbol.size() {

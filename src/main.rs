@@ -1,16 +1,10 @@
-extern crate env_logger;
-extern crate faerie;
-extern crate gimli;
-extern crate goblin;
-extern crate memmap;
-extern crate object;
-extern crate target_lexicon;
-
 use std::{env, fs, process};
 
+use env_logger;
 use faerie::{Artifact, ArtifactBuilder, Decl, Link, Reloc};
 use goblin::elf;
-use object::{Object, ObjectSection, RelocationKind, SectionKind, SymbolKind};
+use memmap;
+use object::{self, Object, ObjectSection, RelocationKind, SectionKind, SymbolKind};
 use target_lexicon::{Architecture, BinaryFormat, Environment, OperatingSystem, Triple, Vendor};
 
 mod dwarf;
@@ -83,7 +77,7 @@ fn main() {
     }
 }
 
-fn rewrite_symbols(file: &object::File, artifact: &mut Artifact) {
+fn rewrite_symbols(file: &object::File<'_>, artifact: &mut Artifact) {
     for (_, symbol) in file.symbols() {
         let name = match symbol.name() {
             Some("") | None => continue,
@@ -139,7 +133,7 @@ fn rewrite_symbols(file: &object::File, artifact: &mut Artifact) {
     }
 }
 
-fn rewrite_relocations(file: &object::File, artifact: &mut Artifact, symbols: &SymbolMap) {
+fn rewrite_relocations(file: &object::File<'_>, artifact: &mut Artifact, symbols: &SymbolMap<'_>) {
     for section in file.sections() {
         match section.kind() {
             SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData => {}
