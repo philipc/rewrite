@@ -6,7 +6,7 @@ use faerie::{Artifact, Decl, Link, Reloc};
 use gimli::read::EndianSlice;
 use gimli::write::{Address, EndianVec};
 use gimli::{self, read, write, LittleEndian};
-use object::{self, Object, ObjectSection};
+use object::{self, Object, ObjectSection, SymbolIndex};
 
 use symbol::SymbolMap;
 
@@ -182,7 +182,7 @@ fn link(
                 addend,
                 size,
             } => {
-                let symbol = file.symbol_by_index(symbol as u64).unwrap();
+                let symbol = file.symbol_by_index(symbol).unwrap();
                 let (to, addend) = symbols.lookup_symbol_offset(file, &symbol, addend as u64);
                 artifact
                     .link_with(
@@ -340,7 +340,7 @@ impl<'a, R: read::Reader<Offset = usize>> read::Reader for ReaderRelocate<'a, R>
                         relocation.addend()
                     };
                     Address::Relative {
-                        symbol: relocation.symbol() as usize,
+                        symbol: relocation.symbol().0,
                         addend,
                     }
                 }
@@ -459,7 +459,7 @@ pub enum Relocation {
     },
     Symbol {
         offset: u64,
-        symbol: usize,
+        symbol: SymbolIndex,
         addend: i32,
         size: u8,
     },
@@ -506,7 +506,7 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
                 let offset = self.len() as u64;
                 self.relocations.push(Relocation::Symbol {
                     offset,
-                    symbol,
+                    symbol: SymbolIndex(symbol),
                     addend: addend as i32,
                     size,
                 });

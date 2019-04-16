@@ -84,7 +84,7 @@ fn main() {
 }
 
 fn rewrite_symbols(file: &object::File, artifact: &mut Artifact) {
-    for symbol in file.symbols() {
+    for (_, symbol) in file.symbols() {
         let name = match symbol.name() {
             Some("") | None => continue,
             Some(name) => name,

@@ -1,19 +1,17 @@
-use std::collections::HashMap;
-
-use object::{Object, ObjectSection, SectionIndex, Symbol, SymbolKind};
+use object::{Object, ObjectSection, Symbol, SymbolKind};
 
 pub struct SymbolMap<'data> {
-    symbols: HashMap<SectionIndex, Vec<Symbol<'data>>>,
+    symbols: Vec<Symbol<'data>>,
 }
 
 impl<'data> SymbolMap<'data> {
     pub fn new(file: &object::File<'data>) -> Self {
-        let mut symbols = HashMap::new();
-        for section in file.sections() {
-            let mut section_symbols: Vec<_> = section.symbols().collect();
-            section_symbols.sort_by_key(|s| s.address());
-            symbols.insert(section.index(), section_symbols);
-        }
+        let mut symbols = file
+            .symbols()
+            .map(|(_, s)| s)
+            .filter(|s| s.section_index().is_some())
+            .collect::<Vec<_>>();
+        symbols.sort_by_key(|s| s.address());
         SymbolMap { symbols }
     }
 
@@ -33,7 +31,6 @@ impl<'data> SymbolMap<'data> {
     }
 
     pub fn lookup_section_offset(&self, section: &object::Section, offset: u64) -> (String, u64) {
-        let section_symbols = self.symbols.get(&section.index()).unwrap();
         let address = section.address() + offset;
         let cmp_address = |symbol: &object::Symbol| {
             if address < symbol.address() {
@@ -44,12 +41,15 @@ impl<'data> SymbolMap<'data> {
                 std::cmp::Ordering::Less
             }
         };
-        let symbol = section_symbols
+        let symbol = self
+            .symbols
             .binary_search_by(cmp_address)
-            .map(|index| &section_symbols[index]);
-        match symbol {
-            Ok(s) => (s.name().unwrap().to_string(), address - s.address()),
-            Err(_) => (section.name().unwrap().to_string(), offset),
+            .map(|index| &self.symbols[index]);
+        if let Ok(s) = symbol {
+            if s.section_index() == Some(section.index()) {
+                return (s.name().unwrap().to_string(), address - s.address());
+            }
         }
+        (section.name().unwrap().to_string(), offset)
     }
 }
