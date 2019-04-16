@@ -2,19 +2,22 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use faerie::{Artifact, Decl, Link, Reloc};
 use gimli::read::EndianSlice;
 use gimli::write::{Address, EndianVec};
 use gimli::{self, read, write, LittleEndian};
 use object::{self, Object, ObjectSection, SymbolIndex};
+use object_write;
 
-use crate::symbol::SymbolMap;
-
-pub fn rewrite_dwarf(file: &object::File<'_>, artifact: &mut Artifact, symbols: &SymbolMap<'_>) {
+pub fn rewrite_dwarf(
+    file: &object::File<'_>,
+    out_object: &mut object_write::Object,
+    symbols: &HashMap<SymbolIndex, object_write::SymbolId>,
+) {
+    /*
     // Define the sections we can't convert yet.
-    for section in file.sections() {
+    for section in in_object.sections() {
         if let Some(name) = section.name() {
-            if is_copy_dwarf_section(&section) {
+            if !is_rewrite_dwarf_section(&section) {
                 artifact.declare(name, Decl::debug_section()).unwrap();
                 artifact
                     .define(name, section.uncompressed_data().into_owned())
@@ -22,6 +25,7 @@ pub fn rewrite_dwarf(file: &object::File<'_>, artifact: &mut Artifact, symbols: 
             }
         }
     }
+    */
 
     fn get_reader<'a>(
         data: &'a [u8],
@@ -115,15 +119,23 @@ pub fn rewrite_dwarf(file: &object::File<'_>, artifact: &mut Artifact, symbols: 
 
     let convert_address = |index| Some(addresses.get(index as usize));
 
-    let mut dwarf = write::Dwarf::from(&dwarf, &convert_address).unwrap();
+    let mut dwarf = match write::Dwarf::from(&dwarf, &convert_address) {
+        Ok(dwarf) => dwarf,
+        Err(write::ConvertError::Read(err)) => {
+            eprintln!("dwarf convert: {}", dwarf.format_error(err));
+            panic!();
+        }
+        _ => panic!(),
+    };
     // TODO: only add relocations for relocatable files
     let mut sections = write::Sections::new(WriterRelocate::new(EndianVec::new(LittleEndian)));
     dwarf.write(&mut sections).unwrap();
+    let mut section_symbols = HashMap::new();
     let _: Result<(), gimli::Error> = sections.for_each_mut(|id, w| {
         define(
-            id.name(),
-            file,
-            artifact,
+            id,
+            out_object,
+            &mut section_symbols,
             symbols,
             w.writer.take(),
             &w.relocations,
@@ -133,10 +145,10 @@ pub fn rewrite_dwarf(file: &object::File<'_>, artifact: &mut Artifact, symbols: 
 }
 
 fn define(
-    name: &str,
-    file: &object::File<'_>,
-    artifact: &mut Artifact,
-    symbols: &SymbolMap<'_>,
+    id: gimli::SectionId,
+    out_object: &mut object_write::Object,
+    section_symbols: &mut HashMap<gimli::SectionId, object_write::SymbolId>,
+    symbols: &HashMap<SymbolIndex, object_write::SymbolId>,
     data: Vec<u8>,
     relocations: &[Relocation],
 ) {
@@ -144,19 +156,36 @@ fn define(
         return;
     }
 
-    artifact
-        .declare_with(name, Decl::debug_section(), data)
-        .unwrap();
-    link(file, artifact, symbols, relocations, name);
+    let relocations = link(section_symbols, symbols, relocations);
+    let section = object_write::Section {
+        name: id.name().as_bytes().to_vec(),
+        segment_name: vec![],
+        kind: object_write::SectionKind::Other,
+        address: 0,
+        size: data.len() as u64,
+        align: 1,
+        data,
+        relocations,
+    };
+    let section_id = out_object.add_section(section);
+    let symbol = object_write::Symbol {
+        name: vec![],
+        value: 0,
+        size: 0,
+        binding: object_write::Binding::Local,
+        kind: object_write::SymbolKind::Section,
+        section: Some(section_id),
+    };
+    let symbol_id = out_object.add_symbol(symbol);
+    section_symbols.insert(id, symbol_id);
 }
 
 fn link(
-    file: &object::File<'_>,
-    artifact: &mut Artifact,
-    symbols: &SymbolMap<'_>,
+    section_symbols: &HashMap<gimli::SectionId, object_write::SymbolId>,
+    symbols: &HashMap<SymbolIndex, object_write::SymbolId>,
     relocations: &[Relocation],
-    from: &str,
-) {
+) -> Vec<object_write::Relocation> {
+    let mut out_relocations = Vec::new();
     for reloc in relocations {
         match *reloc {
             Relocation::Section {
@@ -165,16 +194,24 @@ fn link(
                 addend,
                 size,
             } => {
-                artifact
-                    .link_with(
-                        Link {
-                            from,
-                            to: section,
-                            at: offset,
-                        },
-                        Reloc::Debug { size, addend },
-                    )
-                    .unwrap();
+                let kind = match size {
+                    4 => object_write::RelocationKind::Direct32,
+                    8 => object_write::RelocationKind::Direct64,
+                    _ => unimplemented!(),
+                };
+                let symbol = match section_symbols.get(&section) {
+                    Some(s) => *s,
+                    None => {
+                        eprintln!("Missing section {}", section.name());
+                        continue;
+                    }
+                };
+                out_relocations.push(object_write::Relocation {
+                    offset,
+                    symbol,
+                    kind,
+                    addend: addend as i64,
+                });
             }
             Relocation::Symbol {
                 offset,
@@ -182,33 +219,31 @@ fn link(
                 addend,
                 size,
             } => {
-                let symbol = file.symbol_by_index(symbol).unwrap();
-                let (to, addend) = symbols.lookup_symbol_offset(file, &symbol, addend as u64);
-                artifact
-                    .link_with(
-                        Link {
-                            from,
-                            to: &to,
-                            at: offset,
-                        },
-                        Reloc::Debug {
-                            size,
-                            addend: addend as i32,
-                        },
-                    )
-                    .unwrap();
+                let kind = match size {
+                    4 => object_write::RelocationKind::Direct32,
+                    8 => object_write::RelocationKind::Direct64,
+                    _ => unimplemented!(),
+                };
+                let symbol = *symbols.get(&symbol).unwrap();
+                out_relocations.push(object_write::Relocation {
+                    offset,
+                    symbol,
+                    kind,
+                    addend: addend as i64,
+                });
             }
         }
     }
+    out_relocations
 }
 
-pub fn is_copy_dwarf_section(section: &object::Section<'_, '_>) -> bool {
+pub fn is_rewrite_dwarf_section(section: &object::Section<'_, '_>) -> bool {
     if let Some(name) = section.name() {
         if name.starts_with(".debug_") {
             match name {
                 ".debug_abbrev" | ".debug_info" | ".debug_line" | ".debug_line_str"
-                | ".debug_ranges" | ".debug_rnglists" | ".debug_str" => return false,
-                _ => return true,
+                | ".debug_ranges" | ".debug_rnglists" | ".debug_str" => return true,
+                _ => return false,
             }
         }
     }
@@ -268,7 +303,7 @@ fn get_section<'data>(
 
 // gimli::read::Reader::read_address() returns u64, but gimli::write data structures wants
 // a gimli::write::Address. To work around this, every time we read an address we add
-// an Address to this map, and return that index read_address(). Then later we
+// an Address to this map, and return that index in read_address(). Then later we
 // convert that index back into the Address.
 // Note that addresses 0 and !0 can have special meaning in DWARF (eg for range lists).
 // 0 can also be appear as a default value for DW_AT_low_pc.
@@ -453,7 +488,7 @@ impl<'a, R: read::Reader<Offset = usize>> read::Reader for ReaderRelocate<'a, R>
 pub enum Relocation {
     Section {
         offset: u64,
-        section: &'static str,
+        section: gimli::SectionId,
         addend: i32,
         size: u8,
     },
@@ -522,7 +557,6 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
         size: u8,
     ) -> write::Result<()> {
         let offset = self.len() as u64;
-        let section = section.name();
         self.relocations.push(Relocation::Section {
             offset,
             section,
@@ -539,7 +573,6 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
         section: gimli::SectionId,
         size: u8,
     ) -> write::Result<()> {
-        let section = section.name();
         self.relocations.push(Relocation::Section {
             offset: offset as u64,
             section,

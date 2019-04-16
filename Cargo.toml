@@ -7,8 +7,6 @@ authors = ["Philip Craig <philipjcraig@gmail.com>"]
 [dependencies]
 env_logger = "0.5"
 object = { path = "../object" }
-faerie = { path = "../faerie" }
+object-write = { path = "../object-write" }
 gimli = { path = "../gimli" }
-goblin = { path = "../goblin" }
 memmap = "0.7"
-target-lexicon = "0.4"

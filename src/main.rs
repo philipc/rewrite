@@ -1,17 +1,13 @@
+use std::collections::HashMap;
 use std::{env, fs, process};
 
 use env_logger;
-use faerie::{Artifact, ArtifactBuilder, Decl, Link, Reloc};
-use goblin::elf;
 use memmap;
-use object::{self, Object, ObjectSection, RelocationKind, SectionKind, SymbolKind};
-use target_lexicon::{Architecture, BinaryFormat, Environment, OperatingSystem, Triple, Vendor};
+use object::{self, Object, ObjectSection, SectionKind, SymbolKind};
+use object_write as write;
 
 mod dwarf;
 use dwarf::*;
-
-mod symbol;
-use symbol::*;
 
 fn main() {
     env_logger::init();
@@ -39,146 +35,93 @@ fn main() {
             return;
         }
     };
-    let file = match object::File::parse(&*file) {
-        Ok(file) => file,
+    let in_object = match object::File::parse(&*file) {
+        Ok(object) => object,
         Err(err) => {
             println!("Failed to parse file '{}': {}", from, err);
             return;
         }
     };
 
-    assert_eq!(file.machine(), object::Machine::X86_64);
-    let target = Triple {
-        architecture: Architecture::X86_64,
-        vendor: Vendor::Unknown,
-        operating_system: OperatingSystem::Unknown,
-        environment: Environment::Unknown,
-        binary_format: BinaryFormat::Elf,
-    };
+    let mut out_object = write::Object::new(in_object.machine());
+    out_object.entry = in_object.entry();
 
-    let mut artifact = ArtifactBuilder::new(target).name(to.to_string()).finish();
-
-    let symbols = SymbolMap::new(&file);
-
-    rewrite_symbols(&file, &mut artifact);
-    rewrite_dwarf(&file, &mut artifact, &symbols);
-    rewrite_relocations(&file, &mut artifact, &symbols);
-
-    let file = match fs::File::create(&to) {
-        Ok(file) => file,
-        Err(err) => {
-            println!("Failed to create file '{}': {}", to, err);
-            return;
-        }
-    };
-    if let Err(err) = artifact.write(file) {
-        println!("Failed to write file '{}': {}", to, err);
-        return;
-    }
-}
-
-fn rewrite_symbols(file: &object::File<'_>, artifact: &mut Artifact) {
-    for (_, symbol) in file.symbols() {
-        let name = match symbol.name() {
-            Some("") | None => continue,
-            Some(name) => name,
-        };
-
-        let decl: Decl = match symbol.kind() {
-            SymbolKind::File => {
-                // TODO: use name for ArtifactBuilder
-                continue;
-            }
-            SymbolKind::Text => {
-                if symbol.is_undefined() {
-                    Decl::function_import().into()
-                } else {
-                    // TODO: weak symbols
-                    if symbol.is_global() {
-                        Decl::function().global().into()
-                    } else {
-                        Decl::function().into()
-                    }
-                }
-            }
-            SymbolKind::Data => {
-                if symbol.is_undefined() {
-                    Decl::data_import().into()
-                } else {
-                    // TODO: writable, weak
-                    if symbol.is_global() {
-                        Decl::data().global().writable().into()
-                    } else {
-                        Decl::data().writable().into()
-                    }
-                }
-            }
-            _ => {
-                if symbol.is_undefined() {
-                    // TODO: How do we tell between function and data?
-                    Decl::function_import().into()
-                } else {
-                    println!("Unsupported symbol: {:?}", symbol);
-                    continue;
-                }
-            }
-        };
-
-        artifact.declare(name, decl).unwrap();
-        if !symbol.is_undefined() {
-            let mut data = file.symbol_data(&symbol).unwrap().to_vec();
-            data.resize(symbol.size() as usize, 0);
-            artifact.define(name, data).unwrap();
-        }
-    }
-}
-
-fn rewrite_relocations(file: &object::File<'_>, artifact: &mut Artifact, symbols: &SymbolMap<'_>) {
-    for section in file.sections() {
-        match section.kind() {
-            SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData => {}
-            SectionKind::Unknown => {
-                if !is_copy_dwarf_section(&section) {
-                    continue;
-                }
-            }
-            _ => continue,
-        }
-        if section.name() == Some(".eh_frame") {
-            // Not supported by faerie yet.
+    let mut out_sections = HashMap::new();
+    for in_section in in_object.sections() {
+        if in_section.kind() == SectionKind::Metadata || is_rewrite_dwarf_section(&in_section) {
             continue;
         }
-        for (offset, relocation) in section.relocations() {
-            //println!("\nrelocation: {:x} {:?}", offset, relocation);
-            let (from, at) = symbols.lookup_section_offset(&section, offset);
+        let out_section = write::Section {
+            name: in_section.name().unwrap_or("").as_bytes().to_vec(),
+            segment_name: in_section.segment_name().unwrap_or("").as_bytes().to_vec(),
+            kind: in_section.kind(),
+            address: in_section.address(),
+            size: in_section.size(),
+            align: in_section.align(),
+            data: in_section.uncompressed_data().into(),
+            relocations: Vec::new(),
+        };
+        let section_id = out_object.add_section(out_section);
+        out_sections.insert(in_section.index(), section_id);
+    }
 
-            let to_symbol = file.symbol_by_index(relocation.symbol()).unwrap();
-            //println!("to_symbol {:?}", to_symbol);
-            assert!(!relocation.has_implicit_addend());
-            let addend = relocation.addend() as u64;
-            let (to, addend) = symbols.lookup_symbol_offset(&file, &to_symbol, addend);
-
-            let reloc = match relocation.kind() {
-                RelocationKind::Direct64 => elf::reloc::R_X86_64_64,
-                RelocationKind::Direct32 => elf::reloc::R_X86_64_32,
-                RelocationKind::DirectSigned32 => elf::reloc::R_X86_64_32S,
-                RelocationKind::Other(kind) => kind,
-            };
-            if let Err(_err) = artifact.link_with(
-                Link {
-                    from: &from,
-                    to: &to,
-                    at,
-                },
-                Reloc::Raw {
-                    reloc,
-                    addend: addend as i32,
-                },
-            ) {
-                //println!("Link failed: {} {} 0x{:x} 0x{:x} 0x{:x}: {}", from, to, at, reloc, addend, _err);
-            } else {
-                //println!("Link ok: {} {} 0x{:x} 0x{:x} 0x{:x}", from, to, at, reloc, addend);
-            }
+    let mut out_symbols = HashMap::new();
+    for (symbol_index, in_symbol) in in_object.symbols() {
+        if in_symbol.kind() == SymbolKind::Null {
+            continue;
         }
+        let section = match in_symbol.section_index() {
+            Some(s) => {
+                if let Some(s) = out_sections.get(&s) {
+                    Some(*s)
+                } else {
+                    // Must be a section that we are rewriting.
+                    continue;
+                }
+            }
+            None => None,
+        };
+        let out_symbol = write::Symbol {
+            name: in_symbol.name().unwrap_or("").as_bytes().to_vec(),
+            value: in_symbol.address(),
+            size: in_symbol.size(),
+            binding: in_symbol.binding(),
+            kind: in_symbol.kind(),
+            section,
+        };
+        let symbol_id = out_object.add_symbol(out_symbol);
+        out_symbols.insert(symbol_index, symbol_id);
+    }
+
+    for in_section in in_object.sections() {
+        if in_section.kind() == SectionKind::Metadata || is_rewrite_dwarf_section(&in_section) {
+            continue;
+        }
+        let out_section =
+            &mut out_object.sections[out_sections.get(&in_section.index()).unwrap().0];
+        for (offset, in_relocation) in in_section.relocations() {
+            let symbol = match out_symbols.get(&in_relocation.symbol()) {
+                Some(s) => *s,
+                None => {
+                    eprintln!("skipping reloc {:x}, {:?}", offset, in_relocation);
+                    continue;
+                }
+            };
+            let out_relocation = write::Relocation {
+                offset,
+                symbol,
+                kind: in_relocation.kind(),
+                addend: in_relocation.addend(),
+            };
+            out_section.relocations.push(out_relocation);
+        }
+    }
+
+    rewrite_dwarf(&in_object, &mut out_object, &out_symbols);
+
+    let out_data = out_object.write();
+    if let Err(err) = fs::write(&to, out_data) {
+        println!("Failed to write file '{}': {}", to, err);
+        return;
     }
 }
