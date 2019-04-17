@@ -131,6 +131,22 @@ pub fn rewrite_dwarf(
     let mut sections = write::Sections::new(WriterRelocate::new(EndianVec::new(LittleEndian)));
     dwarf.write(&mut sections).unwrap();
     let mut section_symbols = HashMap::new();
+
+    // Define the sections that don't have write support yet.
+    for (id, data) in &[
+        (gimli::SectionId::DebugLoc, debug_loc_data),
+        (gimli::SectionId::DebugLocLists, debug_loclists_data),
+    ] {
+        define(
+            *id,
+            out_object,
+            &mut section_symbols,
+            symbols,
+            data.to_vec(),
+            &[],
+        );
+    }
+
     let _: Result<(), gimli::Error> = sections.for_each_mut(|id, w| {
         define(
             id,
@@ -241,8 +257,11 @@ pub fn is_rewrite_dwarf_section(section: &object::Section<'_, '_>) -> bool {
     if let Some(name) = section.name() {
         if name.starts_with(".debug_") {
             match name {
-                ".debug_abbrev" | ".debug_info" | ".debug_line" | ".debug_line_str"
-                | ".debug_ranges" | ".debug_rnglists" | ".debug_str" => return true,
+                ".debug_aranges" | ".debug_abbrev" | ".debug_addr" | ".debug_info"
+                | ".debug_line" | ".debug_line_str" | ".debug_loc" | ".debug_loclists"
+                | ".debug_ranges" | ".debug_rnglists" | ".debug_str" | ".debug_str_offsets" => {
+                    return true;
+                }
                 _ => return false,
             }
         }
