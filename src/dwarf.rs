@@ -333,6 +333,10 @@ struct ReadAddressMap {
 
 impl ReadAddressMap {
     fn add(&self, address: Address) -> usize {
+        if address == Address::Absolute(0) {
+            // Must be zero because this may not be an address.
+            return 0;
+        }
         let mut addresses = self.addresses.borrow_mut();
         addresses.push(address);
         // Non-zero
