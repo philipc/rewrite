@@ -251,7 +251,8 @@ pub fn is_rewrite_dwarf_section(section: &object::Section<'_, '_>) -> bool {
             match name {
                 ".debug_aranges" | ".debug_abbrev" | ".debug_addr" | ".debug_info"
                 | ".debug_line" | ".debug_line_str" | ".debug_loc" | ".debug_loclists"
-                | ".debug_ranges" | ".debug_rnglists" | ".debug_str" | ".debug_str_offsets" => {
+                | ".debug_pubnames" | ".debug_pubtypes" | ".debug_ranges" | ".debug_rnglists"
+                | ".debug_str" | ".debug_str_offsets" => {
                     return true;
                 }
                 _ => return false,
