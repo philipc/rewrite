@@ -116,6 +116,8 @@ pub fn rewrite_dwarf(
             )),
         ),
     };
+    let (eh_frame_data, eh_frame_relocs) = get_section(file, ".eh_frame");
+    let eh_frame = read::EhFrame::from(get_reader(&eh_frame_data, &eh_frame_relocs, &addresses));
 
     let convert_address = |index| Some(addresses.get(index as usize));
 
@@ -158,6 +160,18 @@ pub fn rewrite_dwarf(
         );
         Ok(())
     });
+
+    let frame = write::FrameTable::from(&eh_frame, &convert_address).unwrap();
+    let mut out_eh_frame = write::EhFrame(WriterRelocate::new(EndianVec::new(LittleEndian)));
+    frame.write_eh_frame(&mut out_eh_frame).unwrap();
+    define(
+        gimli::SectionId::EhFrame,
+        out_object,
+        &mut section_symbols,
+        symbols,
+        out_eh_frame.0.writer.take(),
+        &out_eh_frame.0.relocations,
+    );
 }
 
 fn define(
@@ -229,13 +243,14 @@ fn link(
                 offset,
                 symbol,
                 addend,
+                kind,
                 size,
             } => {
                 let symbol = *symbols.get(&symbol).unwrap();
                 out_relocations.push(object_write::Relocation {
                     offset,
                     symbol,
-                    kind: object_write::RelocationKind::Absolute,
+                    kind,
                     size: size * 8,
                     addend: addend as i64,
                 });
@@ -252,7 +267,7 @@ pub fn is_rewrite_dwarf_section(section: &object::Section<'_, '_>) -> bool {
                 ".debug_aranges" | ".debug_abbrev" | ".debug_addr" | ".debug_info"
                 | ".debug_line" | ".debug_line_str" | ".debug_loc" | ".debug_loclists"
                 | ".debug_pubnames" | ".debug_pubtypes" | ".debug_ranges" | ".debug_rnglists"
-                | ".debug_str" | ".debug_str_offsets" => {
+                | ".debug_str" | ".debug_str_offsets" | ".eh_frame" => {
                     return true;
                 }
                 _ => return false,
@@ -280,10 +295,11 @@ fn get_section<'data>(
         }
         let offset = offset as usize;
         match relocation.kind() {
-            object::RelocationKind::Absolute => {
+            object::RelocationKind::Absolute | object::RelocationKind::Relative => {
                 if let Some(symbol) = file.symbol_by_index(relocation.symbol()) {
                     let addend = symbol.address().wrapping_add(relocation.addend() as u64);
                     relocation.set_addend(addend as i64);
+                    println!("Adding reloc {} {:?}", offset, relocation);
                     if relocations.insert(offset, relocation).is_some() {
                         println!(
                             "Multiple relocations for section {} at offset 0x{:08x}",
@@ -368,8 +384,29 @@ impl<'a, R: read::Reader<Offset = usize>> ReaderRelocate<'a, R> {
                 }
                 _ => {}
             }
-        };
+        }
         value
+    }
+
+    fn relocate_address(&self, offset: usize, value: u64) -> Option<Address> {
+        if let Some(relocation) = self.relocations.get(&offset) {
+            match relocation.kind() {
+                object::RelocationKind::Absolute | object::RelocationKind::Relative => {
+                    let addend = if relocation.has_implicit_addend() {
+                        // Use the explicit addend too, because it may have the symbol value.
+                        value.wrapping_add(relocation.addend() as u64) as i64
+                    } else {
+                        relocation.addend()
+                    };
+                    return Some(Address::Symbol {
+                        symbol: relocation.symbol().0,
+                        addend,
+                    });
+                }
+                _ => unimplemented!(),
+            }
+        }
+        None
     }
 }
 
@@ -377,37 +414,19 @@ impl<'a, R: read::Reader<Offset = usize>> read::Reader for ReaderRelocate<'a, R>
     type Endian = R::Endian;
     type Offset = R::Offset;
 
+    fn relocate_address(&self, offset: usize, value: u64) -> Option<u64> {
+        //println!("relocate_address {} {}", offset, value);
+        let address = ReaderRelocate::relocate_address(self, offset, value)?;
+        Some(self.addresses.add(address) as u64)
+    }
+
     fn read_address(&mut self, address_size: u8) -> read::Result<u64> {
         let offset = self.reader.offset_from(&self.section);
         let value = self.reader.read_address(address_size)?;
         //println!("read_address {} {}", offset, value);
-        let address = if let Some(relocation) = self.relocations.get(&offset) {
-            match relocation.kind() {
-                object::RelocationKind::Absolute => {
-                    let addend = if relocation.has_implicit_addend() {
-                        // Use the explicit addend too, because it may have the symbol value.
-                        value.wrapping_add(relocation.addend() as u64) as i64
-                    } else {
-                        relocation.addend()
-                    };
-                    Address::Symbol {
-                        symbol: relocation.symbol().0,
-                        addend,
-                    }
-                }
-                _ => unimplemented!(),
-            }
-        } else {
-            Address::Constant(value)
-        };
+        let address = ReaderRelocate::relocate_address(self, offset, value)
+            .unwrap_or(Address::Constant(value));
         Ok(self.addresses.add(address) as u64)
-    }
-
-    fn read_length(&mut self, format: gimli::Format) -> read::Result<usize> {
-        let offset = self.reader.offset_from(&self.section);
-        let value = self.reader.read_length(format)?;
-        //println!("read_length {} {}", offset, value);
-        <usize as read::ReaderOffset>::from_u64(self.relocate(offset, value as u64))
     }
 
     fn read_offset(&mut self, format: gimli::Format) -> read::Result<usize> {
@@ -512,6 +531,7 @@ pub enum Relocation {
         offset: u64,
         symbol: SymbolIndex,
         addend: i32,
+        kind: object_write::RelocationKind,
         size: u8,
     },
 }
@@ -559,10 +579,36 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
                     offset,
                     symbol: SymbolIndex(symbol),
                     addend: addend as i32,
+                    kind: object_write::RelocationKind::Absolute,
                     size,
                 });
                 self.write_udata(0, size)
             }
+        }
+    }
+
+    fn write_eh_pointer(
+        &mut self,
+        address: Address,
+        eh_pe: gimli::DwEhPe,
+        _size: u8,
+    ) -> write::Result<()> {
+        match (address, eh_pe.application(), eh_pe.format()) {
+            (Address::Constant(value), gimli::DW_EH_PE_absptr, gimli::DW_EH_PE_sdata4) => {
+                self.write_u32(value as u32)
+            }
+            (Address::Symbol { symbol, addend }, gimli::DW_EH_PE_pcrel, gimli::DW_EH_PE_sdata4) => {
+                let offset = self.len() as u64;
+                self.relocations.push(Relocation::Symbol {
+                    offset,
+                    symbol: SymbolIndex(symbol),
+                    addend: addend as i32,
+                    kind: object_write::RelocationKind::Relative,
+                    size: 4,
+                });
+                self.write_u32(0)
+            }
+            _ => unimplemented!("{:?} {:?}", address, eh_pe),
         }
     }
 
