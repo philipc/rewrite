@@ -111,6 +111,7 @@ fn main() {
                 offset,
                 symbol,
                 kind: in_relocation.kind(),
+                size: in_relocation.size(),
                 addend: in_relocation.addend(),
             };
             out_section.relocations.push(out_relocation);

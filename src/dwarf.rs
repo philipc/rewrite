@@ -210,11 +210,6 @@ fn link(
                 addend,
                 size,
             } => {
-                let kind = match size {
-                    4 => object_write::RelocationKind::Direct32,
-                    8 => object_write::RelocationKind::Direct64,
-                    _ => unimplemented!(),
-                };
                 let symbol = match section_symbols.get(&section) {
                     Some(s) => *s,
                     None => {
@@ -225,7 +220,8 @@ fn link(
                 out_relocations.push(object_write::Relocation {
                     offset,
                     symbol,
-                    kind,
+                    kind: object_write::RelocationKind::Absolute,
+                    size: size * 8,
                     addend: addend as i64,
                 });
             }
@@ -235,16 +231,12 @@ fn link(
                 addend,
                 size,
             } => {
-                let kind = match size {
-                    4 => object_write::RelocationKind::Direct32,
-                    8 => object_write::RelocationKind::Direct64,
-                    _ => unimplemented!(),
-                };
                 let symbol = *symbols.get(&symbol).unwrap();
                 out_relocations.push(object_write::Relocation {
                     offset,
                     symbol,
-                    kind,
+                    kind: object_write::RelocationKind::Absolute,
+                    size: size * 8,
                     addend: addend as i64,
                 });
             }
@@ -287,7 +279,7 @@ fn get_section<'data>(
         }
         let offset = offset as usize;
         match relocation.kind() {
-            object::RelocationKind::Direct32 | object::RelocationKind::Direct64 => {
+            object::RelocationKind::Absolute => {
                 if let Some(symbol) = file.symbol_by_index(relocation.symbol()) {
                     let addend = symbol.address().wrapping_add(relocation.addend() as u64);
                     relocation.set_addend(addend as i64);
@@ -365,7 +357,7 @@ impl<'a, R: read::Reader<Offset = usize>> ReaderRelocate<'a, R> {
     fn relocate(&self, offset: usize, value: u64) -> u64 {
         if let Some(relocation) = self.relocations.get(&offset) {
             match relocation.kind() {
-                object::RelocationKind::Direct32 | object::RelocationKind::Direct64 => {
+                object::RelocationKind::Absolute => {
                     if relocation.has_implicit_addend() {
                         // Use the explicit addend too, because it may have the symbol value.
                         return value.wrapping_add(relocation.addend() as u64);
@@ -390,7 +382,7 @@ impl<'a, R: read::Reader<Offset = usize>> read::Reader for ReaderRelocate<'a, R>
         //println!("read_address {} {}", offset, value);
         let address = if let Some(relocation) = self.relocations.get(&offset) {
             match relocation.kind() {
-                object::RelocationKind::Direct32 | object::RelocationKind::Direct64 => {
+                object::RelocationKind::Absolute => {
                     let addend = if relocation.has_implicit_addend() {
                         // Use the explicit addend too, because it may have the symbol value.
                         value.wrapping_add(relocation.addend() as u64) as i64
