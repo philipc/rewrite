@@ -326,7 +326,7 @@ struct ReadAddressMap {
 
 impl ReadAddressMap {
     fn add(&self, address: Address) -> usize {
-        if address == Address::Absolute(0) {
+        if address == Address::Constant(0) {
             // Must be zero because this may not be an address.
             return 0;
         }
@@ -338,7 +338,7 @@ impl ReadAddressMap {
 
     fn get(&self, index: usize) -> Address {
         if index == 0 {
-            Address::Absolute(0)
+            Address::Constant(0)
         } else {
             let addresses = self.addresses.borrow();
             addresses[index - 1]
@@ -390,7 +390,7 @@ impl<'a, R: read::Reader<Offset = usize>> read::Reader for ReaderRelocate<'a, R>
                     } else {
                         relocation.addend()
                     };
-                    Address::Relative {
+                    Address::Symbol {
                         symbol: relocation.symbol().0,
                         addend,
                     }
@@ -398,7 +398,7 @@ impl<'a, R: read::Reader<Offset = usize>> read::Reader for ReaderRelocate<'a, R>
                 _ => unimplemented!(),
             }
         } else {
-            Address::Absolute(value)
+            Address::Constant(value)
         };
         Ok(self.addresses.add(address) as u64)
     }
@@ -552,8 +552,8 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
 
     fn write_address(&mut self, address: Address, size: u8) -> write::Result<()> {
         match address {
-            Address::Absolute(val) => self.write_word(val, size),
-            Address::Relative { symbol, addend } => {
+            Address::Constant(val) => self.write_udata(val, size),
+            Address::Symbol { symbol, addend } => {
                 let offset = self.len() as u64;
                 self.relocations.push(Relocation::Symbol {
                     offset,
@@ -561,7 +561,7 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
                     addend: addend as i32,
                     size,
                 });
-                self.write_word(0, size)
+                self.write_udata(0, size)
             }
         }
     }
@@ -579,7 +579,7 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
             addend: val as i32,
             size,
         });
-        self.write_word(0, size)
+        self.write_udata(0, size)
     }
 
     fn write_offset_at(
@@ -595,6 +595,6 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
             addend: val as i32,
             size,
         });
-        self.write_word_at(offset, 0, size)
+        self.write_udata_at(offset, 0, size)
     }
 }
