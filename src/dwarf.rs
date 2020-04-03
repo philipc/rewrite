@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use gimli::read::EndianSlice;
 use gimli::write::{Address, EndianVec};
 use gimli::{self, read, write, LittleEndian};
+use object::write as object_write;
 use object::{self, Object, ObjectSection, SymbolIndex};
-use object_write;
 
 pub fn rewrite_dwarf(
     file: &object::File<'_>,
@@ -116,8 +116,10 @@ pub fn rewrite_dwarf(
             )),
         ),
     };
+    /*
     let (eh_frame_data, eh_frame_relocs) = get_section(file, ".eh_frame");
     let eh_frame = read::EhFrame::from(get_reader(&eh_frame_data, &eh_frame_relocs, &addresses));
+    */
 
     let convert_address = |index| Some(addresses.get(index as usize));
 
@@ -134,21 +136,6 @@ pub fn rewrite_dwarf(
     dwarf.write(&mut sections).unwrap();
     let mut section_symbols = HashMap::new();
 
-    // Define the sections that don't have write support yet.
-    for (id, data) in &[
-        (gimli::SectionId::DebugLoc, debug_loc_data),
-        (gimli::SectionId::DebugLocLists, debug_loclists_data),
-    ] {
-        define(
-            *id,
-            out_object,
-            &mut section_symbols,
-            symbols,
-            data.to_vec(),
-            &[],
-        );
-    }
-
     let _: Result<(), gimli::Error> = sections.for_each_mut(|id, w| {
         define(
             id,
@@ -161,6 +148,7 @@ pub fn rewrite_dwarf(
         Ok(())
     });
 
+    /*
     let frame = write::FrameTable::from(&eh_frame, &convert_address).unwrap();
     let mut out_eh_frame = write::EhFrame(WriterRelocate::new(EndianVec::new(LittleEndian)));
     frame.write_eh_frame(&mut out_eh_frame).unwrap();
@@ -172,6 +160,7 @@ pub fn rewrite_dwarf(
         out_eh_frame.0.writer.take(),
         &out_eh_frame.0.relocations,
     );
+    */
 }
 
 fn define(
@@ -186,28 +175,18 @@ fn define(
         return;
     }
 
-    let relocations = link(section_symbols, symbols, relocations);
-    let section = object_write::Section {
-        name: id.name().as_bytes().to_vec(),
-        segment_name: vec![],
-        kind: object_write::SectionKind::Other,
-        address: 0,
-        size: data.len() as u64,
-        align: 1,
-        data,
-        relocations,
-    };
-    let section_id = out_object.add_section(section);
-    let symbol = object_write::Symbol {
-        name: vec![],
-        value: 0,
-        size: 0,
-        binding: object_write::Binding::Local,
-        kind: object_write::SymbolKind::Section,
-        section: Some(section_id),
-    };
-    let symbol_id = out_object.add_symbol(symbol);
+    let section_id = out_object.add_section(
+        vec![],
+        id.name().as_bytes().to_vec(),
+        object::SectionKind::Other,
+    );
+    let section = out_object.section_mut(section_id);
+    section.set_data(data, 1);
+    let symbol_id = out_object.section_symbol(section_id);
     section_symbols.insert(id, symbol_id);
+    for relocation in link(section_symbols, symbols, relocations) {
+        out_object.add_relocation(section_id, relocation).unwrap();
+    }
 }
 
 fn link(
@@ -233,9 +212,10 @@ fn link(
                 };
                 out_relocations.push(object_write::Relocation {
                     offset,
-                    symbol,
-                    kind: object_write::RelocationKind::Absolute,
                     size: size * 8,
+                    kind: object::RelocationKind::Absolute,
+                    encoding: object::RelocationEncoding::Generic,
+                    symbol,
                     addend: addend as i64,
                 });
             }
@@ -249,9 +229,10 @@ fn link(
                 let symbol = *symbols.get(&symbol).unwrap();
                 out_relocations.push(object_write::Relocation {
                     offset,
-                    symbol,
-                    kind,
                     size: size * 8,
+                    kind,
+                    encoding: object::RelocationEncoding::Generic,
+                    symbol,
                     addend: addend as i64,
                 });
             }
@@ -261,18 +242,23 @@ fn link(
 }
 
 pub fn is_rewrite_dwarf_section(section: &object::Section<'_, '_>) -> bool {
-    if let Some(name) = section.name() {
+    if let Ok(name) = section.name() {
         if name.starts_with(".debug_") {
             match name {
                 ".debug_aranges" | ".debug_abbrev" | ".debug_addr" | ".debug_info"
                 | ".debug_line" | ".debug_line_str" | ".debug_loc" | ".debug_loclists"
                 | ".debug_pubnames" | ".debug_pubtypes" | ".debug_ranges" | ".debug_rnglists"
-                | ".debug_str" | ".debug_str_offsets" | ".eh_frame" => {
+                | ".debug_str" | ".debug_str_offsets" => {
                     return true;
                 }
                 _ => return false,
             }
         }
+        /*
+        if name == ".eh_frame" {
+            return true;
+        }
+        */
     }
     false
 }
@@ -296,28 +282,39 @@ fn get_section<'data>(
         let offset = offset as usize;
         match relocation.kind() {
             object::RelocationKind::Absolute | object::RelocationKind::Relative => {
-                if let Some(symbol) = file.symbol_by_index(relocation.symbol()) {
-                    let addend = symbol.address().wrapping_add(relocation.addend() as u64);
-                    relocation.set_addend(addend as i64);
-                    println!("Adding reloc {} {:?}", offset, relocation);
-                    if relocations.insert(offset, relocation).is_some() {
+                match relocation.target() {
+                    object::RelocationTarget::Symbol(symbol) => {
+                        if let Ok(symbol) = file.symbol_by_index(symbol) {
+                            let addend = symbol.address().wrapping_add(relocation.addend() as u64);
+                            relocation.set_addend(addend as i64);
+                            println!("Adding reloc {} {:?}", offset, relocation);
+                            if relocations.insert(offset, relocation).is_some() {
+                                println!(
+                                    "Multiple relocations for section {} at offset 0x{:08x}",
+                                    section.name().unwrap(),
+                                    offset
+                                );
+                            }
+                        } else {
+                            println!(
+                                "Relocation with invalid symbol for section {} at offset 0x{:08x}",
+                                section.name().unwrap(),
+                                offset
+                            );
+                        }
+                    }
+                    _ => {
                         println!(
-                            "Multiple relocations for section {} at offset 0x{:08x}",
+                            "Unsupported relocation target for section {} at offset 0x{:08x}",
                             section.name().unwrap(),
                             offset
                         );
                     }
-                } else {
-                    println!(
-                        "Relocation with invalid symbol for section {} at offset 0x{:08x}",
-                        section.name().unwrap(),
-                        offset
-                    );
                 }
             }
             _ => {
                 println!(
-                    "Unsupported relocation for section {} at offset 0x{:08x}",
+                    "Unsupported relocation kind for section {} at offset 0x{:08x}",
                     section.name().unwrap(),
                     offset
                 );
@@ -325,7 +322,7 @@ fn get_section<'data>(
         }
     }
 
-    let data = section.uncompressed_data();
+    let data = section.uncompressed_data().unwrap();
     (data, relocations)
 }
 
@@ -390,23 +387,25 @@ impl<'a, R: read::Reader<Offset = usize>> ReaderRelocate<'a, R> {
 
     fn relocate_address(&self, offset: usize, value: u64) -> Option<Address> {
         if let Some(relocation) = self.relocations.get(&offset) {
-            match relocation.kind() {
+            let symbol = match relocation.target() {
+                object::RelocationTarget::Symbol(symbol) => symbol.0,
+                _ => unimplemented!(),
+            };
+            let addend = match relocation.kind() {
                 object::RelocationKind::Absolute | object::RelocationKind::Relative => {
-                    let addend = if relocation.has_implicit_addend() {
+                    if relocation.has_implicit_addend() {
                         // Use the explicit addend too, because it may have the symbol value.
                         value.wrapping_add(relocation.addend() as u64) as i64
                     } else {
                         relocation.addend()
-                    };
-                    return Some(Address::Symbol {
-                        symbol: relocation.symbol().0,
-                        addend,
-                    });
+                    }
                 }
                 _ => unimplemented!(),
-            }
+            };
+            Some(Address::Symbol { symbol, addend })
+        } else {
+            None
         }
-        None
     }
 }
 
@@ -414,18 +413,13 @@ impl<'a, R: read::Reader<Offset = usize>> read::Reader for ReaderRelocate<'a, R>
     type Endian = R::Endian;
     type Offset = R::Offset;
 
-    fn relocate_address(&self, offset: usize, value: u64) -> Option<u64> {
-        //println!("relocate_address {} {}", offset, value);
-        let address = ReaderRelocate::relocate_address(self, offset, value)?;
-        Some(self.addresses.add(address) as u64)
-    }
-
     fn read_address(&mut self, address_size: u8) -> read::Result<u64> {
         let offset = self.reader.offset_from(&self.section);
         let value = self.reader.read_address(address_size)?;
         //println!("read_address {} {}", offset, value);
         let address = ReaderRelocate::relocate_address(self, offset, value)
             .unwrap_or(Address::Constant(value));
+        //println!("relocate_address {} {:?}", offset, address);
         Ok(self.addresses.add(address) as u64)
     }
 
@@ -531,7 +525,7 @@ pub enum Relocation {
         offset: u64,
         symbol: SymbolIndex,
         addend: i32,
-        kind: object_write::RelocationKind,
+        kind: object::RelocationKind,
         size: u8,
     },
 }
@@ -579,7 +573,7 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
                     offset,
                     symbol: SymbolIndex(symbol),
                     addend: addend as i32,
-                    kind: object_write::RelocationKind::Absolute,
+                    kind: object::RelocationKind::Absolute,
                     size,
                 });
                 self.write_udata(0, size)
@@ -593,6 +587,7 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
         eh_pe: gimli::DwEhPe,
         _size: u8,
     ) -> write::Result<()> {
+        println!("write_eh_pointer {} {:?}", self.len(), address);
         match (address, eh_pe.application(), eh_pe.format()) {
             (Address::Constant(value), gimli::DW_EH_PE_absptr, gimli::DW_EH_PE_sdata4) => {
                 self.write_u32(value as u32)
@@ -603,7 +598,7 @@ impl<W: write::Writer> write::Writer for WriterRelocate<W> {
                     offset,
                     symbol: SymbolIndex(symbol),
                     addend: addend as i32,
-                    kind: object_write::RelocationKind::Relative,
+                    kind: object::RelocationKind::Relative,
                     size: 4,
                 });
                 self.write_u32(0)

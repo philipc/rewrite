@@ -6,7 +6,6 @@ authors = ["Philip Craig <philipjcraig@gmail.com>"]
 
 [dependencies]
 env_logger = "0.5"
-object = { path = "../object" }
-object-write = { path = "../object-write" }
+object = { path = "../object", features = ["write"] }
 gimli = { path = "../gimli" }
 memmap = "0.7"
