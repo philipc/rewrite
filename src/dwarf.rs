@@ -6,7 +6,7 @@ use gimli::read::EndianSlice;
 use gimli::write::{Address, EndianVec};
 use gimli::{self, read, write, LittleEndian};
 use object::write as object_write;
-use object::{self, Object, ObjectSection, SymbolIndex};
+use object::{self, Object, ObjectSection, ObjectSymbol, SymbolIndex};
 
 pub fn rewrite_dwarf(
     file: &object::File<'_>,
@@ -46,6 +46,7 @@ pub fn rewrite_dwarf(
     let no_section = (Cow::Borrowed(&[][..]), ReadRelocationMap::default());
     let (debug_abbrev_data, debug_abbrev_relocs) = get_section(file, ".debug_abbrev");
     let (debug_addr_data, debug_addr_relocs) = get_section(file, ".debug_addr");
+    let (debug_aranges_data, debug_aranges_relocs) = get_section(file, ".debug_aranges");
     let (debug_info_data, debug_info_relocs) = get_section(file, ".debug_info");
     let (debug_line_data, debug_line_relocs) = get_section(file, ".debug_line");
     let (debug_line_str_data, debug_line_str_relocs) = get_section(file, ".debug_line_str");
@@ -66,6 +67,11 @@ pub fn rewrite_dwarf(
         debug_addr: read::DebugAddr::from(get_reader(
             &debug_addr_data,
             &debug_addr_relocs,
+            &addresses,
+        )),
+        debug_aranges: read::DebugAranges::from(get_reader(
+            &debug_aranges_data,
+            &debug_aranges_relocs,
             &addresses,
         )),
         debug_info: read::DebugInfo::from(get_reader(
@@ -115,6 +121,7 @@ pub fn rewrite_dwarf(
                 &addresses,
             )),
         ),
+        file_type: gimli::DwarfFileType::Main,
     };
     /*
     let (eh_frame_data, eh_frame_relocs) = get_section(file, ".eh_frame");
@@ -129,7 +136,7 @@ pub fn rewrite_dwarf(
             eprintln!("dwarf convert: {}", dwarf.format_error(err));
             panic!();
         }
-        _ => panic!(),
+        Err(e) => panic!("{:?}", e),
     };
     // TODO: only add relocations for relocatable files
     let mut sections = write::Sections::new(WriterRelocate::new(EndianVec::new(LittleEndian)));

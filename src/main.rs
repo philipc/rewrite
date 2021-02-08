@@ -5,8 +5,8 @@ use env_logger;
 use memmap;
 use object::write;
 use object::{
-    self, Object, ObjectSection, RelocationTarget, SectionKind, SymbolFlags, SymbolKind,
-    SymbolSection,
+    self, Object, ObjectSection, ObjectSymbol, RelocationTarget, SectionKind, SymbolFlags,
+    SymbolKind, SymbolSection,
 };
 
 mod dwarf;
@@ -47,7 +47,11 @@ fn main() {
         }
     };
 
-    let mut out_object = write::Object::new(in_object.format(), in_object.architecture());
+    let mut out_object = write::Object::new(
+        in_object.format(),
+        in_object.architecture(),
+        in_object.endianness(),
+    );
     out_object.mangling = write::Mangling::None;
     out_object.flags = in_object.flags();
 
@@ -75,7 +79,7 @@ fn main() {
     }
 
     let mut out_symbols = HashMap::new();
-    for (symbol_index, in_symbol) in in_object.symbols() {
+    for in_symbol in in_object.symbols() {
         if in_symbol.kind() == SymbolKind::Null {
             continue;
         }
@@ -106,7 +110,9 @@ fn main() {
                 selection,
                 associative_section,
             } => {
-                let associative_section = *out_sections.get(&associative_section).unwrap();
+                let associative_section = associative_section
+                    .as_ref()
+                    .map(|x| *out_sections.get(x).unwrap());
                 SymbolFlags::CoffSection {
                     selection,
                     associative_section,
@@ -124,7 +130,7 @@ fn main() {
             flags,
         };
         let symbol_id = out_object.add_symbol(out_symbol);
-        out_symbols.insert(symbol_index, symbol_id);
+        out_symbols.insert(in_symbol.index(), symbol_id);
     }
 
     for in_section in in_object.sections() {
@@ -138,6 +144,7 @@ fn main() {
                 RelocationTarget::Section(section) => {
                     out_object.section_symbol(*out_sections.get(&section).unwrap())
                 }
+                RelocationTarget::Absolute => unimplemented!(),
             };
             let out_relocation = write::Relocation {
                 offset,
