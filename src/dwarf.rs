@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::convert::TryInto;
 
 use gimli::read::EndianSlice;
 use gimli::write::{Address, EndianVec};
@@ -33,12 +34,11 @@ pub fn rewrite_dwarf(
         addresses: &'a ReadAddressMap,
     ) -> ReaderRelocate<'a, EndianSlice<'a, LittleEndian>> {
         let section = EndianSlice::new(data, LittleEndian);
-        let reader = section.clone();
         ReaderRelocate {
             relocations,
             addresses,
             section,
-            reader,
+            reader: section,
         }
     }
 
@@ -210,11 +210,7 @@ fn get_section<'data>(
         None => return (Cow::Borrowed(&[]), relocations),
     };
     for (offset64, mut relocation) in section.relocations() {
-        let offset = offset64 as usize;
-        if offset as u64 != offset64 {
-            continue;
-        }
-        let offset = offset as usize;
+        let offset = offset64.try_into().unwrap();
         match relocation.kind() {
             object::RelocationKind::Absolute | object::RelocationKind::Relative => {
                 match relocation.target() {
