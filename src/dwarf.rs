@@ -40,89 +40,13 @@ pub fn rewrite_dwarf(
             section,
             reader,
         }
-    };
+    }
 
     let addresses = ReadAddressMap::default();
-    let no_section = (Cow::Borrowed(&[][..]), ReadRelocationMap::default());
-    let (debug_abbrev_data, debug_abbrev_relocs) = get_section(file, ".debug_abbrev");
-    let (debug_addr_data, debug_addr_relocs) = get_section(file, ".debug_addr");
-    let (debug_aranges_data, debug_aranges_relocs) = get_section(file, ".debug_aranges");
-    let (debug_info_data, debug_info_relocs) = get_section(file, ".debug_info");
-    let (debug_line_data, debug_line_relocs) = get_section(file, ".debug_line");
-    let (debug_line_str_data, debug_line_str_relocs) = get_section(file, ".debug_line_str");
-    let (debug_loc_data, debug_loc_relocs) = get_section(file, ".debug_loc");
-    let (debug_loclists_data, debug_loclists_relocs) = get_section(file, ".debug_loclists");
-    let (debug_ranges_data, debug_ranges_relocs) = get_section(file, ".debug_ranges");
-    let (debug_rnglists_data, debug_rnglists_relocs) = get_section(file, ".debug_rnglists");
-    let (debug_str_data, debug_str_relocs) = get_section(file, ".debug_str");
-    let (debug_str_offsets_data, debug_str_offsets_relocs) =
-        get_section(file, ".debug_str_offsets");
-    let (debug_types_data, debug_types_relocs) = get_section(file, ".debug_types");
-    let dwarf = read::Dwarf {
-        debug_abbrev: read::DebugAbbrev::from(get_reader(
-            &debug_abbrev_data,
-            &debug_abbrev_relocs,
-            &addresses,
-        )),
-        debug_addr: read::DebugAddr::from(get_reader(
-            &debug_addr_data,
-            &debug_addr_relocs,
-            &addresses,
-        )),
-        debug_aranges: read::DebugAranges::from(get_reader(
-            &debug_aranges_data,
-            &debug_aranges_relocs,
-            &addresses,
-        )),
-        debug_info: read::DebugInfo::from(get_reader(
-            &debug_info_data,
-            &debug_info_relocs,
-            &addresses,
-        )),
-        debug_line: read::DebugLine::from(get_reader(
-            &debug_line_data,
-            &debug_line_relocs,
-            &addresses,
-        )),
-        debug_line_str: read::DebugLineStr::from(get_reader(
-            &debug_line_str_data,
-            &debug_line_str_relocs,
-            &addresses,
-        )),
-        debug_str: read::DebugStr::from(get_reader(&debug_str_data, &debug_str_relocs, &addresses)),
-        debug_str_offsets: read::DebugStrOffsets::from(get_reader(
-            &debug_str_offsets_data,
-            &debug_str_offsets_relocs,
-            &addresses,
-        )),
-        debug_str_sup: read::DebugStr::from(get_reader(&no_section.0, &no_section.1, &addresses)),
-        debug_types: read::DebugTypes::from(get_reader(
-            &debug_types_data,
-            &debug_types_relocs,
-            &addresses,
-        )),
-        locations: read::LocationLists::new(
-            read::DebugLoc::from(get_reader(&debug_loc_data, &debug_loc_relocs, &addresses)),
-            read::DebugLocLists::from(get_reader(
-                &debug_loclists_data,
-                &debug_loclists_relocs,
-                &addresses,
-            )),
-        ),
-        ranges: read::RangeLists::new(
-            read::DebugRanges::from(get_reader(
-                &debug_ranges_data,
-                &debug_ranges_relocs,
-                &addresses,
-            )),
-            read::DebugRngLists::from(get_reader(
-                &debug_rnglists_data,
-                &debug_rnglists_relocs,
-                &addresses,
-            )),
-        ),
-        file_type: gimli::DwarfFileType::Main,
-    };
+    let dwarf_data =
+        read::DwarfSections::load(|id| -> Result<_, ()> { Ok(get_section(file, id.name())) })
+            .unwrap();
+    let dwarf = dwarf_data.borrow(|(data, relocs)| get_reader(data, relocs, &addresses));
     /*
     let (eh_frame_data, eh_frame_relocs) = get_section(file, ".eh_frame");
     let eh_frame = read::EhFrame::from(get_reader(&eh_frame_data, &eh_frame_relocs, &addresses));
@@ -219,11 +143,13 @@ fn link(
                 };
                 out_relocations.push(object_write::Relocation {
                     offset,
-                    size: size * 8,
-                    kind: object::RelocationKind::Absolute,
-                    encoding: object::RelocationEncoding::Generic,
                     symbol,
                     addend: addend as i64,
+                    flags: object::RelocationFlags::Generic {
+                        size: size * 8,
+                        kind: object::RelocationKind::Absolute,
+                        encoding: object::RelocationEncoding::Generic,
+                    },
                 });
             }
             Relocation::Symbol {
@@ -236,11 +162,13 @@ fn link(
                 let symbol = *symbols.get(&symbol).unwrap();
                 out_relocations.push(object_write::Relocation {
                     offset,
-                    size: size * 8,
-                    kind,
-                    encoding: object::RelocationEncoding::Generic,
                     symbol,
                     addend: addend as i64,
+                    flags: object::RelocationFlags::Generic {
+                        size: size * 8,
+                        kind,
+                        encoding: object::RelocationEncoding::Generic,
+                    },
                 });
             }
         }
@@ -279,7 +207,7 @@ fn get_section<'data>(
     let mut relocations = ReadRelocationMap::default();
     let section = match file.section_by_name(name) {
         Some(section) => section,
-        None => return (Cow::Borrowed(&[][..]), relocations),
+        None => return (Cow::Borrowed(&[]), relocations),
     };
     for (offset64, mut relocation) in section.relocations() {
         let offset = offset64 as usize;

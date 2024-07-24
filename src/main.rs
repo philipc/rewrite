@@ -1,12 +1,9 @@
 use std::collections::HashMap;
 use std::{env, fs, process};
 
-use env_logger;
-use memmap;
 use object::write;
 use object::{
-    self, Object, ObjectSection, ObjectSymbol, RelocationTarget, SectionKind, SymbolFlags,
-    SymbolKind, SymbolSection,
+    Object, ObjectSection, ObjectSymbol, RelocationTarget, SectionKind, SymbolFlags, SymbolSection,
 };
 
 mod dwarf;
@@ -32,7 +29,7 @@ fn main() {
             process::exit(1);
         }
     };
-    let in_file = match unsafe { memmap::Mmap::map(&in_file) } {
+    let in_file = match unsafe { memmap2::Mmap::map(&in_file) } {
         Ok(mmap) => mmap,
         Err(err) => {
             eprintln!("Failed to map file '{}': {}", in_file_path, err,);
@@ -72,7 +69,7 @@ fn main() {
         if out_section.is_bss() {
             out_section.append_bss(in_section.size(), in_section.align());
         } else {
-            out_section.set_data(in_section.data().unwrap().into(), in_section.align());
+            out_section.set_data(in_section.data().unwrap(), in_section.align());
         }
         out_section.flags = in_section.flags();
         out_sections.insert(in_section.index(), section_id);
@@ -80,11 +77,7 @@ fn main() {
 
     let mut out_symbols = HashMap::new();
     for in_symbol in in_object.symbols() {
-        if in_symbol.kind() == SymbolKind::Null {
-            continue;
-        }
         let (section, value) = match in_symbol.section() {
-            SymbolSection::Unknown => panic!("unknown symbol section for {:?}", in_symbol),
             SymbolSection::None => (write::SymbolSection::None, in_symbol.address()),
             SymbolSection::Undefined => (write::SymbolSection::Undefined, in_symbol.address()),
             SymbolSection::Absolute => (write::SymbolSection::Absolute, in_symbol.address()),
@@ -101,6 +94,7 @@ fn main() {
                     in_symbol.address() - in_object.section_by_index(index).unwrap().address(),
                 )
             }
+            _ => panic!("unknown symbol section for {:?}", in_symbol),
         };
         let flags = match in_symbol.flags() {
             SymbolFlags::None => SymbolFlags::None,
@@ -118,6 +112,7 @@ fn main() {
                     associative_section,
                 }
             }
+            _ => panic!("unknown symbol flags for {:?}", in_symbol),
         };
         let out_symbol = write::Symbol {
             name: in_symbol.name().unwrap_or("").as_bytes().to_vec(),
@@ -144,15 +139,13 @@ fn main() {
                 RelocationTarget::Section(section) => {
                     out_object.section_symbol(*out_sections.get(&section).unwrap())
                 }
-                RelocationTarget::Absolute => unimplemented!(),
+                _ => unimplemented!(),
             };
             let out_relocation = write::Relocation {
                 offset,
-                size: in_relocation.size(),
-                kind: in_relocation.kind(),
-                encoding: in_relocation.encoding(),
                 symbol,
                 addend: in_relocation.addend(),
+                flags: in_relocation.flags(),
             };
             out_object
                 .add_relocation(out_section, out_relocation)
