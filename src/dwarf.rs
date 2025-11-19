@@ -65,17 +65,14 @@ pub fn rewrite_dwarf(
     // TODO: only add relocations for relocatable files
     let mut sections = write::Sections::new(WriterRelocate::new(EndianVec::new(LittleEndian)));
     dwarf.write(&mut sections).unwrap();
-    let mut section_symbols = HashMap::new();
+    let mut section_ids = HashMap::new();
 
     let _: Result<(), gimli::Error> = sections.for_each_mut(|id, w| {
-        define(
-            id,
-            out_object,
-            &mut section_symbols,
-            symbols,
-            w.writer.take(),
-            &w.relocations,
-        );
+        define(id, out_object, &mut section_ids, w.writer.take());
+        Ok(())
+    });
+    let _: Result<(), gimli::Error> = sections.for_each_mut(|id, w| {
+        link(id, out_object, &section_ids, symbols, &w.relocations);
         Ok(())
     });
 
@@ -97,10 +94,8 @@ pub fn rewrite_dwarf(
 fn define(
     id: gimli::SectionId,
     out_object: &mut object_write::Object,
-    section_symbols: &mut HashMap<gimli::SectionId, object_write::SymbolId>,
-    symbols: &HashMap<SymbolIndex, object_write::SymbolId>,
+    sections_ids: &mut HashMap<gimli::SectionId, (object_write::SectionId, object_write::SymbolId)>,
     data: Vec<u8>,
-    relocations: &[Relocation],
 ) {
     if data.is_empty() {
         return;
@@ -114,18 +109,19 @@ fn define(
     let section = out_object.section_mut(section_id);
     section.set_data(data, 1);
     let symbol_id = out_object.section_symbol(section_id);
-    section_symbols.insert(id, symbol_id);
-    for relocation in link(section_symbols, symbols, relocations) {
-        out_object.add_relocation(section_id, relocation).unwrap();
-    }
+    sections_ids.insert(id, (section_id, symbol_id));
 }
 
 fn link(
-    section_symbols: &HashMap<gimli::SectionId, object_write::SymbolId>,
+    id: gimli::SectionId,
+    out_object: &mut object_write::Object,
+    sections_ids: &HashMap<gimli::SectionId, (object_write::SectionId, object_write::SymbolId)>,
     symbols: &HashMap<SymbolIndex, object_write::SymbolId>,
     relocations: &[Relocation],
-) -> Vec<object_write::Relocation> {
-    let mut out_relocations = Vec::new();
+) {
+    let Some((section_id, _)) = sections_ids.get(&id).copied() else {
+        return;
+    };
     for reloc in relocations {
         match *reloc {
             Relocation::Section {
@@ -134,23 +130,22 @@ fn link(
                 addend,
                 size,
             } => {
-                let symbol = match section_symbols.get(&section) {
-                    Some(s) => *s,
-                    None => {
-                        eprintln!("Missing section {}", section.name());
-                        continue;
-                    }
-                };
-                out_relocations.push(object_write::Relocation {
-                    offset,
-                    symbol,
-                    addend: addend as i64,
-                    flags: object::RelocationFlags::Generic {
-                        size: size * 8,
-                        kind: object::RelocationKind::Absolute,
-                        encoding: object::RelocationEncoding::Generic,
-                    },
-                });
+                let symbol = sections_ids.get(&section).unwrap().1;
+                out_object
+                    .add_relocation(
+                        section_id,
+                        object_write::Relocation {
+                            offset,
+                            symbol,
+                            addend: addend as i64,
+                            flags: object::RelocationFlags::Generic {
+                                size: size * 8,
+                                kind: object::RelocationKind::Absolute,
+                                encoding: object::RelocationEncoding::Generic,
+                            },
+                        },
+                    )
+                    .unwrap();
             }
             Relocation::Symbol {
                 offset,
@@ -160,20 +155,24 @@ fn link(
                 size,
             } => {
                 let symbol = *symbols.get(&symbol).unwrap();
-                out_relocations.push(object_write::Relocation {
-                    offset,
-                    symbol,
-                    addend: addend as i64,
-                    flags: object::RelocationFlags::Generic {
-                        size: size * 8,
-                        kind,
-                        encoding: object::RelocationEncoding::Generic,
-                    },
-                });
+                out_object
+                    .add_relocation(
+                        section_id,
+                        object_write::Relocation {
+                            offset,
+                            symbol,
+                            addend: addend as i64,
+                            flags: object::RelocationFlags::Generic {
+                                size: size * 8,
+                                kind,
+                                encoding: object::RelocationEncoding::Generic,
+                            },
+                        },
+                    )
+                    .unwrap();
             }
         }
     }
-    out_relocations
 }
 
 pub fn is_rewrite_dwarf_section(section: &object::Section<'_, '_>) -> bool {
