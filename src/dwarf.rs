@@ -273,6 +273,8 @@ impl ReadAddressMap {
         if address == Address::Constant(0) {
             // Must be zero because this may not be an address.
             return 0;
+        } else if address == Address::Constant(!0) {
+            return !0;
         }
         let mut addresses = self.addresses.borrow_mut();
         addresses.push(address);
@@ -283,6 +285,8 @@ impl ReadAddressMap {
     fn get(&self, index: usize) -> Address {
         if index == 0 {
             Address::Constant(0)
+        } else if index == !0 {
+            Address::Constant(!0)
         } else {
             let addresses = self.addresses.borrow();
             addresses[index - 1]
